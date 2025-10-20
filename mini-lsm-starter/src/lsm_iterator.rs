@@ -39,19 +39,25 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.inner.is_valid()
     }
 
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.key().into_inner()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        // TODO: I dont know if I need use ? to return the Error or not
+        self.inner.next()?;
+        // 跳过已经删除的key
+        while self.inner.is_valid() && self.inner.value().is_empty() {
+            self.inner.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -79,18 +85,40 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         Self: 'a;
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        // self.iter.is_valid() && !self.has_errored
+        if self.has_errored {
+            false
+        } else {
+            self.iter.is_valid()
+        }
     }
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        self.iter.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.iter.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        // 按照测试用例，出现错误就要返回err
+        if self.has_errored {
+            return Err(anyhow::anyhow!("iterator has errored previously"));
+        }
+
+        // 但是对于迭代器已经失效，不应该报错
+        if !self.iter.is_valid() {
+            return Ok(());
+        }
+
+        //
+        match self.iter.next() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.has_errored = true;
+                Err(e)
+            }
+        }
     }
 }

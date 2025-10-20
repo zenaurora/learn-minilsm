@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 pub use builder::SsTableBuilder;
-use bytes::Buf;
+use bytes::{Buf, BufMut};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
@@ -50,15 +50,46 @@ impl BlockMeta {
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(
         block_meta: &[BlockMeta],
-        #[allow(clippy::ptr_arg)] // remove this allow after you finish
+        // #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
-        unimplemented!()
+        for meta in block_meta {
+            let first_key_len = meta.first_key.len() as u16;
+            let last_key_len = meta.last_key.len() as u16;
+
+            buf.put_u32_le(meta.offset as u32);
+
+            buf.put_u16_le(first_key_len);
+            buf.put_slice(&meta.first_key.as_key_slice().into_inner());
+
+            buf.put_u16_le(last_key_len);
+            buf.put_slice(&meta.last_key.as_key_slice().into_inner());
+        }
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_meta(buf: impl Buf) -> Vec<BlockMeta> {
-        unimplemented!()
+    pub fn decode_block_meta(mut buf: impl Buf) -> Vec<BlockMeta> {
+        let mut block_meta = Vec::new();
+
+        while buf.has_remaining() {
+            let offset = buf.get_u32_le() as usize;
+
+            let key_len = buf.get_u16_le();
+            let mut first_key = vec![0u8; key_len as usize];
+            buf.copy_to_slice(&mut first_key);
+
+            let last_key_len = buf.get_u16_le() as usize;
+            let mut last_key = vec![0u8; last_key_len];
+            buf.copy_to_slice(&mut last_key);
+
+            block_meta.push(BlockMeta {
+                offset,
+                first_key: KeyBytes::from_bytes(first_key.into()),
+                last_key: KeyBytes::from_bytes(last_key.into()),
+            });
+        }
+
+        block_meta
     }
 }
 
@@ -152,7 +183,18 @@ impl SsTable {
 
     /// Read a block from disk, with block cache. (Day 4)
     pub fn read_block_cached(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        if let Some(cache) = &self.block_cache {
+            if let Some(block) = cache.get(&(self.id, block_idx)) {
+                return Ok(block);
+            } else {
+                let block = self.read_block(block_idx)?;
+                cache.insert((self.id, block_idx), block.clone());
+                return Ok(block);
+            }
+        } else {
+            return self.read_block(block_idx);
+        }
+        // unimplemented!()
     }
 
     /// Find the block that may contain `key`.

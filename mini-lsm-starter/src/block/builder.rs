@@ -15,6 +15,8 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use bytes::BufMut;
+
 use crate::key::{KeySlice, KeyVec};
 
 use super::Block;
@@ -34,23 +36,59 @@ pub struct BlockBuilder {
 impl BlockBuilder {
     /// Creates a new block builder.
     pub fn new(block_size: usize) -> Self {
-        unimplemented!()
+        Self {
+            block_size,
+            data: Vec::new(),
+            offsets: Vec::new(),
+            first_key: KeyVec::new(),
+        }
     }
 
     /// Adds a key-value pair to the block. Returns false when the block is full.
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        unimplemented!()
+        // 计算添加这个 entry 后的总大小
+        let entry_size = 2 + key.len() + 2 + value.len(); // key_len + key + value_len + value
+        let new_data_size = self.data.len() + entry_size;
+        let new_offsets_size = (self.offsets.len() + 1) * 2; // 新增一个 offset
+        let total_size = new_data_size + new_offsets_size + 2; // +2 for num_of_elements
+
+        // 如果不是第一个 entry,且总大小会超过 block_size,返回 false
+        if !self.is_empty() && total_size > self.block_size {
+            return false;
+        }
+
+        let key_len = key.len() as u16;
+        let value_len = value.len() as u16;
+        self.offsets.push(self.data.len() as u16);
+
+        // 一开始用的extend_from_slice,使用BufMut里面的方法更简洁
+        self.data.put_u16_le(key.len() as u16); // 写入 u16 小端序
+        self.data.put_slice(key.into_inner()); // 写入 slice
+        self.data.put_u16_le(value.len() as u16); // 写入 u16 小端序
+        self.data.put_slice(value); // 写入 slice
+
+        if self.first_key.is_empty() {
+            self.first_key = key.to_key_vec();
+        }
+
+        true
     }
 
     /// Check if there is no key-value pair in the block.
     pub fn is_empty(&self) -> bool {
-        unimplemented!()
+        if self.data.is_empty() && self.offsets.is_empty() {
+            return true;
+        }
+        false
     }
 
     /// Finalize the block.
     pub fn build(self) -> Block {
-        unimplemented!()
+        Block {
+            data: self.data,
+            offsets: self.offsets,
+        }
     }
 }

@@ -48,44 +48,112 @@ impl BlockIterator {
 
     /// Creates a block iterator and seek to the first entry.
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
-        unimplemented!()
+        let mut iter = Self::new(block);
+
+        iter.seek_to_first();
+
+        iter
     }
 
     /// Creates a block iterator and seek to the first key that >= `key`.
     pub fn create_and_seek_to_key(block: Arc<Block>, key: KeySlice) -> Self {
-        unimplemented!()
+        let mut iter = Self::new(block);
+
+        iter.seek_to_key(key);
+
+        iter
     }
 
     /// Returns the key of the current entry.
-    pub fn key(&self) -> KeySlice {
-        unimplemented!()
+    pub fn key(&self) -> KeySlice<'_> {
+        self.key.as_key_slice()
     }
 
     /// Returns the value of the current entry.
     pub fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.get_value_at_index(self.idx)
     }
 
     /// Returns true if the iterator is valid.
     /// Note: You may want to make use of `key`
     pub fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.key.is_empty()
     }
 
     /// Seeks to the first key in the block.
     pub fn seek_to_first(&mut self) {
-        unimplemented!()
+        let data = &self.block.data;
+
+        if !data.is_empty() {
+            let first_key_len = u16::from_le_bytes([data[0], data[1]]) as usize;
+            let first_key = data[2..2 + first_key_len].to_vec();
+            self.key = KeyVec::from_vec(first_key);
+            self.first_key = self.key.clone();
+            self.idx = 0;
+        }
     }
 
     /// Move to the next key in the block.
     pub fn next(&mut self) {
-        unimplemented!()
+        if self.idx + 1 < self.block.offsets.len() {
+            self.idx += 1;
+            self.key = self.get_key_at_index(self.idx).to_key_vec();
+        } else {
+            self.idx = self.block.offsets.len();
+            self.key.clear();
+        }
     }
 
     /// Seek to the first key that >= `key`.
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
-        unimplemented!()
+        let offsets = &self.block.offsets;
+
+        let mut left = 0;
+        let mut right = offsets.len();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let mid_key = self.get_key_at_index(mid);
+            if mid_key < key {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+
+        // now left is the index
+        if left < offsets.len() {
+            self.idx = left;
+            self.key = self.get_key_at_index(left).to_key_vec();
+        } else {
+            // not found
+            self.idx = offsets.len();
+            self.key.clear();
+        }
+    }
+
+    fn get_key_at_index(&self, index: usize) -> KeySlice<'_> {
+        let data_pos = self.block.offsets[index] as usize;
+
+        let key_len =
+            u16::from_le_bytes([self.block.data[data_pos], self.block.data[data_pos + 1]]) as usize;
+
+        let key = &self.block.data[data_pos + 2..data_pos + 2 + key_len];
+
+        KeySlice::from_slice(key)
+    }
+
+    fn get_value_at_index(&self, index: usize) -> &[u8] {
+        let data = &self.block.data;
+        let data_pos = self.block.offsets[index] as usize;
+
+        let key_len = u16::from_le_bytes([data[data_pos], data[data_pos + 1]]) as usize;
+        let value_len = u16::from_le_bytes([
+            data[data_pos + 2 + key_len],
+            data[data_pos + 2 + key_len + 1],
+        ]) as usize;
+
+        &data[data_pos + 2 + key_len + 2..data_pos + 2 + key_len + 2 + value_len]
     }
 }
