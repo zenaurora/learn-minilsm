@@ -15,23 +15,35 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use std::ops::Bound;
+
 use anyhow::Result;
+use bytes::Bytes;
 
 use crate::{
-    iterators::{StorageIterator, merge_iterator::MergeIterator},
+    iterators::{
+        StorageIterator, merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator,
+    },
     mem_table::MemTableIterator,
+    table::SsTableIterator,
 };
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+// type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        Ok(Self { inner: iter })
+    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+        Ok(Self {
+            inner: iter,
+            end_bound,
+        })
     }
 }
 
@@ -57,6 +69,26 @@ impl StorageIterator for LsmIterator {
         while self.inner.is_valid() && self.inner.value().is_empty() {
             self.inner.next()?;
         }
+
+        // 检查是否越界
+        if self.inner.is_valid() {
+            match &self.end_bound {
+                Bound::Included(end_key) => {
+                    if self.inner.key().into_inner() > end_key.as_ref() {
+                        // 超过了end_bound
+                        return Ok(());
+                    }
+                }
+                Bound::Excluded(end_key) => {
+                    if self.inner.key().into_inner() >= end_key.as_ref() {
+                        // 超过了end_bound
+                        return Ok(());
+                    }
+                }
+                Bound::Unbounded => {}
+            }
+        }
+
         Ok(())
     }
 }
@@ -64,6 +96,7 @@ impl StorageIterator for LsmIterator {
 /// A wrapper around existing iterator, will prevent users from calling `next` when the iterator is
 /// invalid. If an iterator is already invalid, `next` does not do anything. If `next` returns an error,
 /// `is_valid` should return false, and `next` should always return an error.
+/// 这个就是一个对当前迭代器的包装器，防止用户在迭代器无效的时候调用next
 pub struct FusedIterator<I: StorageIterator> {
     iter: I,
     has_errored: bool,

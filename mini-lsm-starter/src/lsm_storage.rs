@@ -16,6 +16,7 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::collections::HashMap;
+use std::mem;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,11 +33,13 @@ use crate::compact::{
 };
 use crate::iterators::StorageIterator;
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -323,7 +326,10 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let state = self.state.read();
+        let state = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
 
         if let Some(value) = state.memtable.get(key) {
             if value.is_empty() {
@@ -339,6 +345,53 @@ impl LsmStorageInner {
                     return Ok(None);
                 }
                 return Ok(Some(value));
+            }
+        }
+
+        let mut sstable_iters = Vec::new();
+
+        // L0 SSTs（从新到旧）
+        for &sst_id in &state.l0_sstables {
+            let sstable = state.sstables.get(&sst_id).unwrap();
+            let iter = SsTableIterator::create_and_seek_to_key(
+                sstable.clone(),
+                KeySlice::from_slice(key),
+            )?;
+
+            // 检查是否找到了精确匹配的 key
+            if iter.is_valid() && iter.key().raw_ref() == key {
+                sstable_iters.push(Box::new(iter));
+            }
+        }
+
+        // 其他 level 的 SSTs
+        for (_level, sst_ids) in &state.levels {
+            for &sst_id in sst_ids {
+                let sstable = state.sstables.get(&sst_id).unwrap();
+                let iter = SsTableIterator::create_and_seek_to_key(
+                    sstable.clone(),
+                    KeySlice::from_slice(key),
+                )?;
+
+                // 检查是否找到了精确匹配的 key
+                if iter.is_valid() && iter.key().raw_ref() == key {
+                    sstable_iters.push(Box::new(iter));
+                }
+            }
+        }
+
+        let mut sstable_merged_iter = MergeIterator::create(sstable_iters);
+
+        while sstable_merged_iter.is_valid() {
+            if sstable_merged_iter.key().raw_ref() == key {
+                let value = sstable_merged_iter.value();
+                if value.is_empty() {
+                    return Ok(None);
+                } else {
+                    return Ok(Some(Bytes::copy_from_slice(value)));
+                }
+            } else {
+                sstable_merged_iter.next()?;
             }
         }
 
@@ -443,31 +496,110 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    fn get_twomerged_iter(
+        &self,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> Result<TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>>
+    {
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+
+        // 收集所有 memtable 的迭代器
+        let mut mem_iters = Vec::new();
+
+        // 当前 memtable
+        mem_iters.push(Box::new(snapshot.memtable.scan(lower, upper)));
+
+        // 所有不可变 memtables（从新到旧）
+        // 从新到旧的原因是因为每次新插入的都是从开头插入的
+        for imm_memtable in &snapshot.imm_memtables {
+            mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
+        }
+
+        // create SSTable iterators
+        let mut sst_iters = Vec::new();
+        for &sst_id in &snapshot.l0_sstables {
+            let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
+            sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
+                sstable.clone(),
+            )?));
+        }
+
+        for (_level, sst_ids) in &snapshot.levels {
+            for &sst_id in sst_ids {
+                let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
+                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
+                    sstable.clone(),
+                )?));
+            }
+        }
+
+        // 创建 merge iterator
+        let merge_memtable_iter = MergeIterator::create(mem_iters);
+        let merge_sstable_iter = MergeIterator::create(sst_iters);
+
+        let new_iter = TwoMergeIterator::create(merge_memtable_iter, merge_sstable_iter)?;
+        Ok(new_iter)
+    }
+
     /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let state = self.state.read();
+        // let state = self.state.read();
 
-        // 收集所有 memtable 的迭代器
-        let mut mem_iters = Vec::new();
+        // // 收集所有 memtable 的迭代器
+        // let mut mem_iters = Vec::new();
 
-        // 当前 memtable
-        mem_iters.push(Box::new(state.memtable.scan(lower, upper)));
+        // // 当前 memtable
+        // mem_iters.push(Box::new(state.memtable.scan(lower, upper)));
 
-        // 所有不可变 memtables（从新到旧）
-        // 从新到旧的原因是因为每次新插入的都是从开头插入的
-        for imm_memtable in &state.imm_memtables {
-            mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
-        }
+        // // 所有不可变 memtables（从新到旧）
+        // // 从新到旧的原因是因为每次新插入的都是从开头插入的
+        // for imm_memtable in &state.imm_memtables {
+        //     mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
+        // }
 
-        // 创建 merge iterator
-        let merge_iter = MergeIterator::create(mem_iters);
-        println!("MergeIterator created.");
-        let mut lsm_iter = LsmIterator::new(merge_iter)?;
-        println!("LsmIterator created.");
+        // // create SSTable iterators
+        // let mut sst_iters = Vec::new();
+        // for &sst_id in &state.l0_sstables {
+        //     let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
+        //     sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
+        //         sstable.clone(),
+        //     )?));
+        // }
+
+        // for (_level, sst_ids) in &state.levels {
+        //     for &sst_id in sst_ids {
+        //         let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
+        //         sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
+        //             sstable.clone(),
+        //         )?));
+        //     }
+        // }
+
+        // // 创建 merge iterator
+        // let merge_memtable_iter = MergeIterator::create(mem_iters);
+        // let merge_sstable_iter = MergeIterator::create(sst_iters);
+
+        // let new_iter = TwoMergeIterator::create(merge_memtable_iter, merge_sstable_iter)?;
+
+        let new_iter = self.get_twomerged_iter(lower, upper)?;
+
+        // 创建end_bound 字段
+        let end_bound = match upper {
+            Bound::Included(u) => Bound::Included(Bytes::from(u.to_vec())),
+            Bound::Excluded(u) => Bound::Excluded(Bytes::from(u.to_vec())),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        // println!("MergeIterator created.");
+        let mut lsm_iter = LsmIterator::new(new_iter, end_bound)?;
+        // println!("LsmIterator created.");
 
         // 判断一个key是否被删除，需要跳过这些
         // 教训：注意要把跳过删除的key的逻辑放在这里，

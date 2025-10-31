@@ -15,7 +15,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 
 use super::StorageIterator;
 
@@ -25,6 +25,7 @@ pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
     // Add fields as need
+    use_a: bool,
 }
 
 impl<
@@ -32,9 +33,34 @@ impl<
     B: 'static + for<'a> StorageIterator<KeyType<'a> = A::KeyType<'a>>,
 > TwoMergeIterator<A, B>
 {
+    // merge data from both memtable iterators and SST iterators into a single one
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        let mut iter = Self { a, b, use_a: false };
+
+        iter.update_flag();
+
+        Ok(iter)
     }
+
+    pub fn update_flag(&mut self) {
+        if self.a.is_valid() && self.b.is_valid() {
+            let a_key = self.a.key();
+            let b_key = self.b.key();
+            if a_key < b_key {
+                self.use_a = true;
+            } else if a_key > b_key {
+                self.use_a = false;
+            } else {
+                self.use_a = true;
+            }
+        } else if self.a.is_valid() {
+            self.use_a = true;
+        } else if self.b.is_valid() {
+            self.use_a = false;
+        }
+    }
+
+    
 }
 
 impl<
@@ -45,18 +71,46 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if self.use_a {
+            self.a.key()
+        } else {
+            self.b.key()
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if self.use_a {
+            self.a.value()
+        } else {
+            self.b.value()
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.a.is_valid() || self.b.is_valid()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if !self.a.is_valid() && !self.b.is_valid() {
+            return Ok(());
+        }
+        if !self.a.is_valid() {
+            return self.b.next();
+        }
+        if !self.b.is_valid() {
+            return self.a.next();
+        }
+        if self.a.key() == self.b.key() {
+            self.b.next()?;
+            return self.a.next();
+        }
+        if self.a.key() < self.b.key() {
+            return self.a.next();
+        }
+        self.b.next()?;
+        self.update_flag();
+        Ok(())
+
     }
+
 }

@@ -239,15 +239,11 @@ impl SsTable {
             Some(cache) => {
                 // try_get_with 会自动缓存闭包返回的结果
                 // 不需要手动调用 cache.insert
-                println!("get cached sst_id:{} block_idx:{}", self.id, block_idx);
                 cache
                     .try_get_with((self.id, block_idx), || self.read_block(block_idx))
                     .map_err(|err| anyhow::anyhow!("{err}"))
             }
-            None => {
-                println!("no cache sst_id:{} block_idx:{}", self.id, block_idx);
-                self.read_block(block_idx)
-            }
+            None => self.read_block(block_idx),
         }
     }
 

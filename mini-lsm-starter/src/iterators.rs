@@ -20,7 +20,6 @@ pub trait StorageIterator {
     type KeyType<'a>: PartialEq + Eq + PartialOrd + Ord
     where
         Self: 'a;
-
     /// Get the current value.
     fn value(&self) -> &[u8];
 

@@ -119,7 +119,6 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         };
 
         let current_key = current.1.key().to_key_vec(); // 需要clone一下，否则会遇到所有权问题
-
         // 先把当前的迭代器往下走一步
         // current.1.next 本质是 *current.1, 是一个可变借用
         if let Err(e) = current.1.next() {
