@@ -21,9 +21,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use bytes::Bytes;
-use crossbeam_skiplist::{SkipList, SkipMap};
+use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;

@@ -108,6 +108,11 @@ impl BlockIterator {
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
+        if self.first_key.as_key_slice() >= key {
+            self.key.clear();
+            return;
+        }
+
         let offsets = &self.block.offsets;
 
         let mut left = 0;

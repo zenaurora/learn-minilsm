@@ -153,7 +153,45 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        unimplemented!()
+        // open SSTable 需要读取meta信息
+        // fileObject 包括 File 和 size
+        let file_size = file.size();
+        println!("file_size is {file_size}");
+        let buf = file.read(0, file_size)?;
+        // 读取meta_offset
+        let meta_offset = {
+            let extra_offset = file_size - 4;
+            let meta_sec_offset = &buf[extra_offset as usize..];
+            (&meta_sec_offset[..4]).get_u32_le() as usize
+        };
+
+        // get and decode block_meta.vec
+        let meta_data = &buf[meta_offset..(file_size - 4) as usize];
+        let block_meta = BlockMeta::decode_block_meta(&mut &meta_data[..]);
+
+        let first_key = block_meta
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("SST has no blocks"))?
+            .first_key
+            .clone();
+
+        let last_key: crate::key::Key<bytes::Bytes> = block_meta
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("SST has no blocks"))?
+            .last_key
+            .clone();
+
+        Ok(Self {
+            file,
+            block_meta,
+            block_meta_offset: meta_offset,
+            id,
+            block_cache,
+            first_key,
+            last_key,
+            bloom: None,
+            max_ts: 0,
+        })
     }
 
     /// Create a mock SST with only first key + last key metadata
@@ -178,30 +216,75 @@ impl SsTable {
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        let file = self.file.0.as_ref().unwrap();
+        let file_obj = &self.file;
+
+        let cur_block_meta = &self.block_meta[block_idx];
+
+        let cur_meta_offset = cur_block_meta.offset;
+        let len = if block_idx + 1 < self.block_meta.len() {
+            self.block_meta[block_idx + 1].offset - cur_meta_offset
+        } else {
+            self.block_meta_offset - cur_meta_offset
+        };
+        let block_u8 = file_obj.read(cur_meta_offset as u64, len as u64)?;
+
+        Ok(Arc::new(Block::decode(&block_u8)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)
     pub fn read_block_cached(&self, block_idx: usize) -> Result<Arc<Block>> {
-        if let Some(cache) = &self.block_cache {
-            if let Some(block) = cache.get(&(self.id, block_idx)) {
-                return Ok(block);
-            } else {
-                let block = self.read_block(block_idx)?;
-                cache.insert((self.id, block_idx), block.clone());
-                return Ok(block);
+        // key is (sst_id, block_id)
+        match &self.block_cache {
+            Some(cache) => {
+                // try_get_with 会自动缓存闭包返回的结果
+                // 不需要手动调用 cache.insert
+                println!("get cached sst_id:{} block_idx:{}", self.id, block_idx);
+                cache
+                    .try_get_with((self.id, block_idx), || self.read_block(block_idx))
+                    .map_err(|err| anyhow::anyhow!("{err}"))
             }
-        } else {
-            return self.read_block(block_idx);
+            None => {
+                println!("no cache sst_id:{} block_idx:{}", self.id, block_idx);
+                self.read_block(block_idx)
+            }
         }
-        // unimplemented!()
     }
 
     /// Find the block that may contain `key`.
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        unimplemented!()
+        let metas = &self.block_meta;
+        let mut left = 0;
+        let mut right = metas.len();
+
+        // 依据meta寻找一个合适的块
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let mid_first_key = &metas[mid].first_key;
+
+            if mid_first_key.as_key_slice() <= key {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        let idx = if left == 0 { 0 } else { left - 1 };
+        // 找到第一个 first_key > key 的位置
+        println!(
+            "the {} idx meta's firstKey is {:?}",
+            left,
+            std::str::from_utf8(&metas[12].first_key.for_testing_key_ref())
+        );
+
+        idx
+        // let idx = self
+        //     .block_meta
+        //     .partition_point(|meta| meta.first_key.as_key_slice() <= key);
+
+        // // 返回前一个 block（如果 idx > 0）
+        // if idx == 0 { 0 } else { idx - 1 }
     }
 
     /// Get number of data blocks.

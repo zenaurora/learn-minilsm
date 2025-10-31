@@ -38,7 +38,7 @@ impl BlockBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             block_size,
-            data: Vec::new(),
+            data: Vec::with_capacity(block_size),
             offsets: Vec::new(),
             first_key: KeyVec::new(),
         }

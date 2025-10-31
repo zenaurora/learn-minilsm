@@ -70,29 +70,17 @@ impl SsTableIterator {
     /// Note: You probably want to review the handout for detailed explanation when implementing
     /// this function.
     pub fn seek_to_key(&mut self, key: KeySlice) -> Result<()> {
-        let metas = &self.table.block_meta;
-        let mut left = 0;
-        let mut right = metas.len();
-
-        while left < right {
-            let mid = left + (right - left) / 2;
-            let mid_first_key = &metas[mid].first_key;
-
-            if mid_first_key.as_key_slice() <= key {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-
-        self.blk_idx = if left == 0 { 0 } else { left - 1 };
+        // Vec<meta> 中 每个meta包含fkey,lkey和offset
+        self.blk_idx = self.table.find_block_idx(key);
+        // blk_iter 就是如果当前更换一个块找的时候就要去更新一下
         let block = self.table.read_block_cached(self.blk_idx)?;
+        println!("{}", std::str::from_utf8(block.data.as_ref()).unwrap());
         self.blk_iter = BlockIterator::create_and_seek_to_key(block, key);
-
         // 如果在当前的block没有这个key，说明可能在下一个block里面
         if !self.blk_iter.is_valid() && self.blk_idx + 1 < self.table.num_of_blocks() {
             self.blk_idx += 1;
             let next_block = self.table.read_block_cached(self.blk_idx)?;
+            // self.blk_iter = BlockIterator::create_and_seek_to_key(next_block, key);
             self.blk_iter = BlockIterator::create_and_seek_to_first(next_block);
         }
 
@@ -121,6 +109,7 @@ impl StorageIterator for SsTableIterator {
     /// Move to the next `key` in the block.
     /// Note: You may want to check if the current block iterator is valid after the move.
     fn next(&mut self) -> Result<()> {
+        // 先把当前block的iter移动一下
         self.blk_iter.next();
 
         if !self.blk_iter.is_valid() && self.blk_idx + 1 < self.table.num_of_blocks() {
@@ -130,6 +119,5 @@ impl StorageIterator for SsTableIterator {
         }
 
         Ok(())
-
     }
 }

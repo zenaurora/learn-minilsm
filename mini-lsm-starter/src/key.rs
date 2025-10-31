@@ -91,7 +91,7 @@ impl Key<Vec<u8>> {
 }
 
 impl Key<Bytes> {
-    pub fn as_key_slice(&self) -> KeySlice {
+    pub fn as_key_slice(&'_ self) -> KeySlice<'_> {
         Key(&self.0)
     }
 

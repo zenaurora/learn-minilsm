@@ -15,15 +15,15 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use std::path::Path;
 use std::sync::Arc;
-use std::{arch::x86_64::_SIDD_LEAST_SIGNIFICANT, path::Path};
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes};
 
 use super::{BlockMeta, SsTable};
 use crate::{
-    block::{self, BlockBuilder},
+    block::BlockBuilder,
     key::{self, KeySlice},
     lsm_storage::BlockCache,
     table::FileObject,
@@ -46,7 +46,7 @@ impl SsTableBuilder {
             builder: BlockBuilder::new(block_size),
             first_key: Vec::new(),
             last_key: Vec::new(),
-            data: Vec::new(),
+            data: Vec::with_capacity(block_size),
             meta: Vec::new(),
             block_size,
         }
@@ -80,13 +80,15 @@ impl SsTableBuilder {
                 std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
             let block_data = old_builder.build().encode();
             self.data.extend_from_slice(&block_data);
+            /* a bug fixed after 1 hours:
+               I forget to reset first_key and last_key after finishing a block,
+               so the new block will have wrong first_key and last_key.
+               It will always be the first_key and last_key of the previous block.
+            */
+            self.first_key.clear();
+            self.last_key.clear();
 
-            // Add the key-value pair to the new block
-            // let _ = self.builder.add(key, value);
-            // self.first_key.clear();
-            // self.first_key.extend_from_slice(key.into_inner());
-            // self.last_key.clear();
-            // or just recursively call add
+            // just recursively call add
             self.add(key, value);
         }
     }
@@ -107,6 +109,7 @@ impl SsTableBuilder {
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
         let block = self.builder.build();
+        // 先设置offset 再写入data
         self.meta.push(BlockMeta {
             first_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.first_key)),
             last_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.last_key)),
@@ -119,7 +122,8 @@ impl SsTableBuilder {
 
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
 
-        self.data.extend_from_slice(&(meta_offset as u32).to_le_bytes());
+        self.data
+            .extend_from_slice(&(meta_offset as u32).to_le_bytes());
 
         let file = FileObject::create(path.as_ref(), self.data)?;
 
