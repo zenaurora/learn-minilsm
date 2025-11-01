@@ -21,6 +21,7 @@ use bytes::Bytes;
 use tempfile::tempdir;
 
 use super::*;
+use crate::iterators::StorageIterator;
 use crate::{
     iterators::two_merge_iterator::TwoMergeIterator,
     lsm_storage::{LsmStorageInner, LsmStorageOptions},
@@ -201,6 +202,7 @@ fn test_task2_storage_scan() {
             .unwrap(),
         vec![(Bytes::from("2"), Bytes::from("2333"))],
     );
+
     check_lsm_iter_result_by_key(
         &mut storage
             .scan(Bound::Included(b"0"), Bound::Included(b"1"))

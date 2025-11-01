@@ -268,11 +268,6 @@ impl SsTable {
         }
         let idx = if left == 0 { 0 } else { left - 1 };
         // 找到第一个 first_key > key 的位置
-        println!(
-            "the {} idx meta's firstKey is {:?}",
-            left,
-            std::str::from_utf8(&metas[12].first_key.for_testing_key_ref())
-        );
 
         idx
         // let idx = self

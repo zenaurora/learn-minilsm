@@ -74,14 +74,16 @@ impl SsTableIterator {
         self.blk_idx = self.table.find_block_idx(key);
         // blk_iter 就是如果当前更换一个块找的时候就要去更新一下
         let block = self.table.read_block_cached(self.blk_idx)?;
-        println!("{}", std::str::from_utf8(block.data.as_ref()).unwrap());
+        // println!("{}", std::str::from_utf8(block.data.as_ref()).unwrap());
         self.blk_iter = BlockIterator::create_and_seek_to_key(block, key);
         // 如果在当前的block没有这个key，说明可能在下一个block里面
-        if !self.blk_iter.is_valid() && self.blk_idx + 1 < self.table.num_of_blocks() {
+        while !self.blk_iter.is_valid() && self.blk_idx + 1 < self.table.num_of_blocks() {
+            println!("move to next block");
             self.blk_idx += 1;
             let next_block = self.table.read_block_cached(self.blk_idx)?;
-            // self.blk_iter = BlockIterator::create_and_seek_to_key(next_block, key);
-            self.blk_iter = BlockIterator::create_and_seek_to_first(next_block);
+            // remember this is find the first key >= target key, not always ==
+            self.blk_iter = BlockIterator::create_and_seek_to_key(next_block, key);
+            // self.blk_iter = BlockIterator::create_and_seek_to_first(next_block);
         }
 
         Ok(())

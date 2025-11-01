@@ -37,30 +37,33 @@ impl<
     pub fn create(a: A, b: B) -> Result<Self> {
         let mut iter = Self { a, b, use_a: false };
 
-        iter.update_flag();
+        iter.update_flag()?;
 
         Ok(iter)
     }
 
-    pub fn update_flag(&mut self) {
-        if self.a.is_valid() && self.b.is_valid() {
-            let a_key = self.a.key();
-            let b_key = self.b.key();
-            if a_key < b_key {
-                self.use_a = true;
-            } else if a_key > b_key {
-                self.use_a = false;
-            } else {
-                self.use_a = true;
-            }
-        } else if self.a.is_valid() {
+    pub fn update_flag(&mut self) -> Result<()> {
+        if !self.a.is_valid() && !self.b.is_valid() {
             self.use_a = true;
-        } else if self.b.is_valid() {
-            self.use_a = false;
+            return Ok(());
         }
-    }
 
-    
+        let both_valid = self.a.is_valid() && self.b.is_valid();
+
+        if both_valid {
+            let equal = self.a.key() == self.b.key();
+            if equal {
+                self.use_a = true;
+                self.b.next()?;
+            }
+        } else if !self.a.is_valid() && self.b.is_valid() {
+            self.use_a = false;
+        } else if self.a.is_valid() && !self.b.is_valid() {
+            self.use_a = true;
+        }
+
+        Ok(())
+    }
 }
 
 impl<
@@ -91,26 +94,13 @@ impl<
     }
 
     fn next(&mut self) -> Result<()> {
-        if !self.a.is_valid() && !self.b.is_valid() {
-            return Ok(());
-        }
-        if !self.a.is_valid() {
-            return self.b.next();
-        }
-        if !self.b.is_valid() {
-            return self.a.next();
-        }
-        if self.a.key() == self.b.key() {
+        self.update_flag()?;
+        if self.use_a {
+            self.a.next()?;
+        } else {
             self.b.next()?;
-            return self.a.next();
         }
-        if self.a.key() < self.b.key() {
-            return self.a.next();
-        }
-        self.b.next()?;
-        self.update_flag();
+        self.update_flag()?;
         Ok(())
-
     }
-
 }

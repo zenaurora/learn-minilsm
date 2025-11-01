@@ -24,6 +24,7 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::{Ok, Result};
 use bytes::Bytes;
+use crossbeam_channel::Iter;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -519,21 +520,146 @@ impl LsmStorageInner {
             mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
         }
 
+        // how to implement upper and lower bound for SSTableIterator?
         // create SSTable iterators
+
         let mut sst_iters = Vec::new();
         for &sst_id in &snapshot.l0_sstables {
             let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
-            sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
-                sstable.clone(),
-            )?));
+
+            let first_key = sstable.first_key();
+            let last_key = sstable.last_key();
+
+            // let mut lower_bound_key: &[u8] = &[];
+
+            // let mut has_lower = false;
+
+            match upper {
+                Bound::Included(upper_key) => {
+                    if first_key.raw_ref() > upper_key {
+                        continue;
+                    }
+                }
+                Bound::Excluded(upper_key) => {
+                    if first_key.raw_ref() >= upper_key {
+                        continue;
+                    }
+                }
+                Bound::Unbounded => {}
+            }
+
+            match lower {
+                Bound::Included(lower_key) => {
+                    if last_key.raw_ref() < lower_key {
+                        continue;
+                    }
+
+                    let iter = SsTableIterator::create_and_seek_to_key(
+                        sstable.clone(),
+                        KeySlice::from_slice(lower_key),
+                    )?;
+
+                    if iter.is_valid() && iter.key().raw_ref() == lower_key {
+                    } else {
+                        continue;
+                    }
+
+                    sst_iters.push(Box::new(iter));
+                }
+                Bound::Excluded(lower_key) => {
+                    if last_key.raw_ref() <= lower_key {
+                        continue;
+                    }
+                    let mut iter = SsTableIterator::create_and_seek_to_key(
+                        sstable.clone(),
+                        KeySlice::from_slice(lower_key),
+                    )?;
+
+                    iter.next()?;
+
+                    if iter.is_valid() && iter.key().raw_ref() > lower_key {
+                    } else {
+                        continue;
+                    }
+                    sst_iters.push(Box::new(iter));
+                }
+                Bound::Unbounded => {
+                    let iter = SsTableIterator::create_and_seek_to_first(sstable.clone())?;
+                    if !iter.is_valid() {
+                        continue;
+                    }
+                    sst_iters.push(Box::new(iter));
+                }
+            }
         }
 
         for (_level, sst_ids) in &snapshot.levels {
             for &sst_id in sst_ids {
                 let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
-                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
-                    sstable.clone(),
-                )?));
+
+                let first_key = sstable.first_key();
+                let last_key = sstable.last_key();
+
+                // let mut lower_bound_key: &[u8] = &[];
+
+                // let mut has_lower = false;
+
+                match upper {
+                    Bound::Included(upper_key) => {
+                        if first_key.raw_ref() > upper_key {
+                            continue;
+                        }
+                    }
+                    Bound::Excluded(upper_key) => {
+                        if first_key.raw_ref() >= upper_key {
+                            continue;
+                        }
+                    }
+                    Bound::Unbounded => {}
+                }
+
+                match lower {
+                    Bound::Included(lower_key) => {
+                        if last_key.raw_ref() < lower_key {
+                            continue;
+                        }
+
+                        let iter = SsTableIterator::create_and_seek_to_key(
+                            sstable.clone(),
+                            KeySlice::from_slice(lower_key),
+                        )?;
+
+                        if iter.is_valid() && iter.key().raw_ref() == lower_key {
+                        } else {
+                            continue;
+                        }
+                        sst_iters.push(Box::new(iter));
+                    }
+                    Bound::Excluded(lower_key) => {
+                        if last_key.raw_ref() <= lower_key {
+                            continue;
+                        }
+                        let mut iter = SsTableIterator::create_and_seek_to_key(
+                            sstable.clone(),
+                            KeySlice::from_slice(lower_key),
+                        )?;
+
+                        iter.next()?;
+
+                        if iter.is_valid() && iter.key().raw_ref() > lower_key {
+                        } else {
+                            continue;
+                        }
+                        sst_iters.push(Box::new(iter));
+                    }
+                    Bound::Unbounded => {
+                        let iter = SsTableIterator::create_and_seek_to_first(sstable.clone())?;
+                        if !iter.is_valid() {
+                            continue;
+                        }
+                        sst_iters.push(Box::new(iter));
+                    }
+                }
             }
         }
 
@@ -598,6 +724,7 @@ impl LsmStorageInner {
             Bound::Unbounded => Bound::Unbounded,
         };
         // println!("MergeIterator created.");
+        // 创建 LsmIterator，inner 是 TwoMergeIterator
         let mut lsm_iter = LsmIterator::new(new_iter, end_bound)?;
         // println!("LsmIterator created.");
 
