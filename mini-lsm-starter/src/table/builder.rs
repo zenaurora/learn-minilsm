@@ -65,9 +65,20 @@ impl SsTableBuilder {
             } else {
                 self.last_key.clear();
                 self.last_key.put_slice(key.into_inner());
+                // println!(
+                //     "Updating last_key: {:?}",
+                //     String::from_utf8_lossy(&self.last_key)
+                // );
             }
         } else {
             // Current block is full, need to finish it and start a new one.
+            if self.last_key.is_empty() {
+                self.last_key.put_slice(key.into_inner());
+                // println!(
+                //     "Updating last_key to solve>>: {:?}",
+                //     String::from_utf8_lossy(&self.last_key)
+                // );
+            }
             let block_meta = BlockMeta {
                 first_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.first_key)),
                 last_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.last_key)),
@@ -86,7 +97,6 @@ impl SsTableBuilder {
                It will always be the first_key and last_key of the previous block.
             */
             self.first_key.clear();
-            self.last_key.clear();
 
             // just recursively call add
             self.add(key, value);
@@ -110,6 +120,13 @@ impl SsTableBuilder {
     ) -> Result<SsTable> {
         let block = self.builder.build();
         // 先设置offset 再写入data
+        if self.last_key.is_empty() {
+            self.last_key.put_slice(&self.first_key);
+            // println!(
+            //     "Updating last_key to solve>>: {:?}",
+            //     String::from_utf8_lossy(&self.last_key)
+            // );
+        }
         self.meta.push(BlockMeta {
             first_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.first_key)),
             last_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.last_key)),
@@ -129,6 +146,14 @@ impl SsTableBuilder {
 
         let first_key = self.meta.first().unwrap().first_key.clone();
         let last_key = self.meta.last().unwrap().last_key.clone();
+
+        // println!("Build a SST id: {},", id);
+        // println!("  first_key: {:?}", String::from_utf8_lossy(&first_key.raw_ref()));
+        // println!("  last_key: {:?}", String::from_utf8_lossy(&last_key.raw_ref()));
+        if id == 1 {
+            println!("last key = {:?}", last_key);
+            println!("self.meta = {:?}", self.meta);
+        }
 
         Ok(SsTable {
             id,

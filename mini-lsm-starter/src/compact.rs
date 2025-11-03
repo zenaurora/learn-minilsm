@@ -161,12 +161,31 @@ impl LsmStorageInner {
     }
 
     fn trigger_flush(&self) -> Result<()> {
-        let state = self.state.read();
+        // let state = self.state.read();
+        // println!(
+        //     "trying to trigger flush, imm_memtables len: {},limit = {}",
+        //     state.imm_memtables.len(),self.options.num_memtable_limit
+        // );
+        // if state.imm_memtables.len() + 1 > self.options.num_memtable_limit {
+        //     self.force_flush_next_imm_memtable()?;
+        // }
+        // println!("flush triggered");
+        // Ok(())
+        let should_flush = {
+            let state = self.state.read();
+            println!(
+                "trying to trigger flush, imm_memtables len: {}, limit = {}",
+                state.imm_memtables.len(),
+                self.options.num_memtable_limit
+            );
+            state.imm_memtables.len() >= self.options.num_memtable_limit
+        }; // ← read lock 在这里释放
 
-        if state.imm_memtables.len() + 1 > self.options.num_memtable_limit {
+        if should_flush {
             self.force_flush_next_imm_memtable()?;
         }
 
+        println!("flush triggered");
         Ok(())
     }
 

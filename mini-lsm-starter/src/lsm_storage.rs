@@ -339,37 +339,70 @@ impl LsmStorageInner {
 
         // L0 SSTs（从新到旧）
         for &sst_id in &state.l0_sstables {
-            let sstable = state.sstables.get(&sst_id).unwrap();
+            let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
+            println!("I want to find key:{:?}", std::str::from_utf8(key).unwrap());
+            println!(
+                "Checking SSTable-l0 id: {}, first_key: {:?}, last_key: {:?}",
+                sst_id,
+                std::str::from_utf8(sstable.first_key().raw_ref()).unwrap(),
+                std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
+            );
+            if !Self::key_within(
+                key,
+                sstable.first_key().raw_ref(),
+                sstable.last_key().raw_ref(),
+            ) {
+                continue;
+            }
+
             let iter = SsTableIterator::create_and_seek_to_key(
                 sstable.clone(),
                 KeySlice::from_slice(key),
             )?;
-
             // 检查是否找到了精确匹配的 key
-            if iter.is_valid() && iter.key().raw_ref() == key {
-                sstable_iters.push(Box::new(iter));
-            }
+            // if iter.is_valid() && iter.key().raw_ref() == key {
+            sstable_iters.push(Box::new(iter));
+            // }
         }
 
         // 其他 level 的 SSTs
         for (_level, sst_ids) in &state.levels {
             for &sst_id in sst_ids {
                 let sstable = state.sstables.get(&sst_id).unwrap();
+                // println!(
+                //     "Checking SSTable-otherl id: {}, first_key: {:?}, last_key: {:?}",
+                //     sst_id,
+                //     std::str::from_utf8(sstable.first_key().raw_ref()).unwrap(),
+                //     std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
+                // );
+                if !Self::key_within(
+                    key,
+                    sstable.first_key().raw_ref(),
+                    sstable.last_key().raw_ref(),
+                ) {
+                    continue;
+                }
+
                 let iter = SsTableIterator::create_and_seek_to_key(
                     sstable.clone(),
                     KeySlice::from_slice(key),
                 )?;
 
                 // 检查是否找到了精确匹配的 key
-                if iter.is_valid() && iter.key().raw_ref() == key {
-                    sstable_iters.push(Box::new(iter));
-                }
+                // if iter.is_valid() && iter.key().raw_ref() == key {
+                sstable_iters.push(Box::new(iter));
+                // }
             }
         }
 
         let mut sstable_merged_iter = MergeIterator::create(sstable_iters);
-
         while sstable_merged_iter.is_valid() {
+            // println!(
+            //     "Checking SSTable key: {:?},value:{:?}",
+            //     std::str::from_utf8(sstable_merged_iter.key().raw_ref()).unwrap(),
+            //     std::str::from_utf8(sstable_merged_iter.value()).unwrap()
+            // );
+
             if sstable_merged_iter.key().raw_ref() == key {
                 let value = sstable_merged_iter.value();
                 if value.is_empty() {
@@ -477,9 +510,9 @@ impl LsmStorageInner {
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
         std::fs::create_dir_all(&self.path)?;
         let memtable_to_flush;
-
+        let sstable;
         // create new sstable using the imm_memtable.last()
-        let sstable = {
+        {
             let guard = self.state.read();
 
             if let Some(memtable) = guard.imm_memtables.last() {
@@ -493,13 +526,11 @@ impl LsmStorageInner {
 
             memtable_to_flush.flush(&mut sstable_builder)?;
 
-            let sstable = sstable_builder.build(
+            sstable = sstable_builder.build(
                 memtable_to_flush.id(),
                 Some(self.block_cache.clone()),
                 sst_path,
             )?;
-
-            sstable
         };
 
         // heavy write operation, use state_lock to synchronize
@@ -511,7 +542,6 @@ impl LsmStorageInner {
 
             let mut new_imm_tables = cur_state.imm_memtables.clone();
             new_imm_tables.pop();
-
             let mut new_l0_sstables = cur_state.l0_sstables.clone();
             new_l0_sstables.insert(0, memtable_to_flush.id());
 
@@ -538,60 +568,8 @@ impl LsmStorageInner {
         Ok(())
     }
 
-    fn range_overlap(
-        &self,
-        upper: Bound<&[u8]>,
-        lower: Bound<&[u8]>,
-        first_key: &[u8],
-        last_key: &[u8],
-    ) -> bool {
-        match upper {
-            Bound::Included(upper_key) => {
-                if first_key > upper_key {
-                    return false;
-                }
-            }
-            Bound::Excluded(upper_key) => {
-                if first_key >= upper_key {
-                    return false;
-                }
-            }
-            Bound::Unbounded => {}
-        }
-
-        match lower {
-            Bound::Included(lower_key) => {
-                if last_key < lower_key {
-                    return false;
-                }
-            }
-            Bound::Excluded(lower_key) => {
-                if last_key <= lower_key {
-                    return false;
-                }
-            }
-            Bound::Unbounded => {}
-        }
-
-        true
-    }
-
-    fn key_within(key: &[u8], lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
-        // 检查下界
-        let lower_match = match lower {
-            Bound::Included(lower_key) => key >= lower_key,
-            Bound::Excluded(lower_key) => key > lower_key,
-            Bound::Unbounded => true,
-        };
-
-        // 检查上界
-        let upper_match = match upper {
-            Bound::Included(upper_key) => key <= upper_key,
-            Bound::Excluded(upper_key) => key < upper_key,
-            Bound::Unbounded => true,
-        };
-
-        lower_match && upper_match
+    fn key_within(user_key: &[u8], table_begin: &[u8], table_end: &[u8]) -> bool {
+        user_key >= table_begin && user_key <= table_end
     }
 
     fn get_twomerged_iter(
@@ -624,14 +602,6 @@ impl LsmStorageInner {
 
             let first_key = sstable.first_key();
             let last_key = sstable.last_key();
-            if self.range_overlap(
-                upper,
-                lower,
-                sstable.first_key().raw_ref(),
-                sstable.last_key().raw_ref(),
-            ) {
-                continue;
-            }
 
             match upper {
                 Bound::Included(upper_key) => {
@@ -698,14 +668,7 @@ impl LsmStorageInner {
 
                 let first_key = sstable.first_key();
                 let last_key = sstable.last_key();
-                if self.range_overlap(
-                    upper,
-                    lower,
-                    sstable.first_key().raw_ref(),
-                    sstable.last_key().raw_ref(),
-                ) {
-                    continue;
-                }
+
                 match upper {
                     Bound::Included(upper_key) => {
                         if first_key.raw_ref() > upper_key {

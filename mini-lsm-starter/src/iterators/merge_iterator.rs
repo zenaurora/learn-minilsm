@@ -131,6 +131,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
             }
         }
 
+        // 再从堆顶找一个新的iter
         while let Some(mut heap_top) = self.iters.peek_mut() {
             if !heap_top.1.is_valid() {
                 // 如果当前迭代器失效了，就把它弹出
