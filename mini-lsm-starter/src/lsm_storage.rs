@@ -40,7 +40,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -175,7 +175,11 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        self.flush_notifier.send(())?;
+        self.compaction_notifier.send(())?;
+        self.flush_thread.lock().take().map(|handle| handle.join());
+        self.compaction_thread.lock().take().map(|handle| handle.join());   
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -489,7 +493,59 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+
+        let memtable_to_flush;
+
+        // create new sstable using the imm_memtable.last()
+        let sstable= {
+            let guard = self.state.read();
+
+            if let Some(memtable) = guard.imm_memtables.last() {
+                memtable_to_flush = Arc::clone(memtable);
+            } else {
+                return Ok(());
+            }
+            let sst_path = self.path_of_sst(memtable_to_flush.id());
+
+            let mut sstable_builder = SsTableBuilder::new(self.options.block_size);
+
+            memtable_to_flush.flush(&mut sstable_builder)?;
+
+            let sstable =
+                sstable_builder.build(memtable_to_flush.id(), Some(self.block_cache.clone()), sst_path)?;
+
+            sstable
+        };
+
+        // heavy write operation, use state_lock to synchronize
+        {   
+            let _state_lcok = self.state_lock.lock();
+
+            let mut state = self.state.write();
+            let cur_state = state.as_ref();
+
+            let mut new_imm_tables = cur_state.imm_memtables.clone();
+            new_imm_tables.pop();
+
+            let mut new_l0_sstables = cur_state.l0_sstables.clone();
+            new_l0_sstables.insert(0, memtable_to_flush.id());
+
+            let new_state = Arc::new(LsmStorageState {
+                memtable: cur_state.memtable.clone(),
+                imm_memtables: new_imm_tables,
+                l0_sstables: new_l0_sstables,
+                levels: cur_state.levels.clone(),
+                sstables: {
+                    let mut new_sstables = cur_state.sstables.clone();
+                    new_sstables.insert(memtable_to_flush.id(), Arc::new(sstable));
+                    new_sstables
+                },
+            });
+
+            *state = new_state;
+        }
+
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {

@@ -161,6 +161,13 @@ impl LsmStorageInner {
     }
 
     fn trigger_flush(&self) -> Result<()> {
+
+        let state = self.state.read();
+
+        if state.imm_memtables.len() + 1 > self.options.num_memtable_limit {
+            self.force_flush_next_imm_memtable()?;
+        }
+
         Ok(())
     }
 
@@ -172,6 +179,7 @@ impl LsmStorageInner {
         let handle = std::thread::spawn(move || {
             let ticker = crossbeam_channel::tick(Duration::from_millis(50));
             loop {
+                // 每50ms执行一次flush
                 crossbeam_channel::select! {
                     recv(ticker) -> _ => if let Err(e) = this.trigger_flush() {
                         eprintln!("flush failed: {}", e);
