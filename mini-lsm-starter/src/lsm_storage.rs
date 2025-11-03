@@ -520,19 +520,13 @@ impl LsmStorageInner {
             mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
         }
 
-        // how to implement upper and lower bound for SSTableIterator?
         // create SSTable iterators
-
         let mut sst_iters = Vec::new();
         for &sst_id in &snapshot.l0_sstables {
             let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
 
             let first_key = sstable.first_key();
             let last_key = sstable.last_key();
-
-            // let mut lower_bound_key: &[u8] = &[];
-
-            // let mut has_lower = false;
 
             match upper {
                 Bound::Included(upper_key) => {
@@ -599,10 +593,6 @@ impl LsmStorageInner {
 
                 let first_key = sstable.first_key();
                 let last_key = sstable.last_key();
-
-                // let mut lower_bound_key: &[u8] = &[];
-
-                // let mut has_lower = false;
 
                 match upper {
                     Bound::Included(upper_key) => {
@@ -677,44 +667,6 @@ impl LsmStorageInner {
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        // let state = self.state.read();
-
-        // // 收集所有 memtable 的迭代器
-        // let mut mem_iters = Vec::new();
-
-        // // 当前 memtable
-        // mem_iters.push(Box::new(state.memtable.scan(lower, upper)));
-
-        // // 所有不可变 memtables（从新到旧）
-        // // 从新到旧的原因是因为每次新插入的都是从开头插入的
-        // for imm_memtable in &state.imm_memtables {
-        //     mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
-        // }
-
-        // // create SSTable iterators
-        // let mut sst_iters = Vec::new();
-        // for &sst_id in &state.l0_sstables {
-        //     let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
-        //     sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
-        //         sstable.clone(),
-        //     )?));
-        // }
-
-        // for (_level, sst_ids) in &state.levels {
-        //     for &sst_id in sst_ids {
-        //         let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
-        //         sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
-        //             sstable.clone(),
-        //         )?));
-        //     }
-        // }
-
-        // // 创建 merge iterator
-        // let merge_memtable_iter = MergeIterator::create(mem_iters);
-        // let merge_sstable_iter = MergeIterator::create(sst_iters);
-
-        // let new_iter = TwoMergeIterator::create(merge_memtable_iter, merge_sstable_iter)?;
-
         let new_iter = self.get_twomerged_iter(lower, upper)?;
 
         // 创建end_bound 字段
