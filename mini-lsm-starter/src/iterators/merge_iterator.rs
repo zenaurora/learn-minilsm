@@ -178,4 +178,15 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         直到堆顶的key和current的key不相同为止
     4.  最后将堆顶的iter弹出，作为新的current
      */
+
+    fn num_active_iterators(&self) -> usize {
+        let currnet_nums_of_active = self
+            .current
+            .as_ref()
+            .map(|i| i.1.num_active_iterators())
+            .unwrap_or(0);
+        self.iters.iter().fold(currnet_nums_of_active, |sum, i| {
+            sum + i.1.num_active_iterators()
+        })
+    }
 }

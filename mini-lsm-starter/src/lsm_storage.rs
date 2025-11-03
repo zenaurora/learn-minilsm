@@ -16,6 +16,7 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::collections::HashMap;
+use std::fs::create_dir;
 use std::mem;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
@@ -178,7 +179,11 @@ impl MiniLsm {
         self.flush_notifier.send(())?;
         self.compaction_notifier.send(())?;
         self.flush_thread.lock().take().map(|handle| handle.join());
-        self.compaction_thread.lock().take().map(|handle| handle.join());   
+        self.compaction_thread
+            .lock()
+            .take()
+            .map(|handle| handle.join());
+
         Ok(())
     }
 
@@ -253,29 +258,6 @@ impl MiniLsm {
 }
 
 impl LsmStorageInner {
-    pub fn show_memtable_datas(&self) {
-        let state = self.state.read();
-        println!("Current Memtable Data:");
-        for entry in state.memtable.map.iter() {
-            println!(
-                "Key: {}, Value: {}",
-                String::from_utf8_lossy(entry.key()),
-                String::from_utf8_lossy(entry.value())
-            );
-        }
-
-        for (i, imm_memtable) in state.imm_memtables.iter().enumerate() {
-            println!("Immutable Memtable {} Data:", i);
-            for entry in imm_memtable.map.iter() {
-                println!(
-                    "Key: {}, Value: {}",
-                    String::from_utf8_lossy(entry.key()),
-                    String::from_utf8_lossy(entry.value())
-                );
-            }
-        }
-    }
-
     pub(crate) fn next_sst_id(&self) -> usize {
         self.next_sst_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -493,11 +475,11 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-
+        std::fs::create_dir_all(&self.path)?;
         let memtable_to_flush;
 
         // create new sstable using the imm_memtable.last()
-        let sstable= {
+        let sstable = {
             let guard = self.state.read();
 
             if let Some(memtable) = guard.imm_memtables.last() {
@@ -511,14 +493,17 @@ impl LsmStorageInner {
 
             memtable_to_flush.flush(&mut sstable_builder)?;
 
-            let sstable =
-                sstable_builder.build(memtable_to_flush.id(), Some(self.block_cache.clone()), sst_path)?;
+            let sstable = sstable_builder.build(
+                memtable_to_flush.id(),
+                Some(self.block_cache.clone()),
+                sst_path,
+            )?;
 
             sstable
         };
 
         // heavy write operation, use state_lock to synchronize
-        {   
+        {
             let _state_lcok = self.state_lock.lock();
 
             let mut state = self.state.write();
@@ -553,6 +538,62 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    fn range_overlap(
+        &self,
+        upper: Bound<&[u8]>,
+        lower: Bound<&[u8]>,
+        first_key: &[u8],
+        last_key: &[u8],
+    ) -> bool {
+        match upper {
+            Bound::Included(upper_key) => {
+                if first_key > upper_key {
+                    return false;
+                }
+            }
+            Bound::Excluded(upper_key) => {
+                if first_key >= upper_key {
+                    return false;
+                }
+            }
+            Bound::Unbounded => {}
+        }
+
+        match lower {
+            Bound::Included(lower_key) => {
+                if last_key < lower_key {
+                    return false;
+                }
+            }
+            Bound::Excluded(lower_key) => {
+                if last_key <= lower_key {
+                    return false;
+                }
+            }
+            Bound::Unbounded => {}
+        }
+
+        true
+    }
+
+    fn key_within(key: &[u8], lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
+        // 检查下界
+        let lower_match = match lower {
+            Bound::Included(lower_key) => key >= lower_key,
+            Bound::Excluded(lower_key) => key > lower_key,
+            Bound::Unbounded => true,
+        };
+
+        // 检查上界
+        let upper_match = match upper {
+            Bound::Included(upper_key) => key <= upper_key,
+            Bound::Excluded(upper_key) => key < upper_key,
+            Bound::Unbounded => true,
+        };
+
+        lower_match && upper_match
+    }
+
     fn get_twomerged_iter(
         &self,
         lower: Bound<&[u8]>,
@@ -583,6 +624,14 @@ impl LsmStorageInner {
 
             let first_key = sstable.first_key();
             let last_key = sstable.last_key();
+            if self.range_overlap(
+                upper,
+                lower,
+                sstable.first_key().raw_ref(),
+                sstable.last_key().raw_ref(),
+            ) {
+                continue;
+            }
 
             match upper {
                 Bound::Included(upper_key) => {
@@ -649,7 +698,14 @@ impl LsmStorageInner {
 
                 let first_key = sstable.first_key();
                 let last_key = sstable.last_key();
-
+                if self.range_overlap(
+                    upper,
+                    lower,
+                    sstable.first_key().raw_ref(),
+                    sstable.last_key().raw_ref(),
+                ) {
+                    continue;
+                }
                 match upper {
                     Bound::Included(upper_key) => {
                         if first_key.raw_ref() > upper_key {

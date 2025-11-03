@@ -103,4 +103,15 @@ impl<
         self.update_flag()?;
         Ok(())
     }
+
+    fn num_active_iterators(&self) -> usize {
+        let mut count = 0;
+        if self.a.is_valid() {
+            count += self.a.num_active_iterators();
+        }
+        if self.b.is_valid() {
+            count += self.b.num_active_iterators();
+        }
+        count
+    }
 }
