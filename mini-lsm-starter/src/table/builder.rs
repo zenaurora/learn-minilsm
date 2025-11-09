@@ -26,9 +26,13 @@ use crate::{
     block::BlockBuilder,
     key::{self, KeySlice},
     lsm_storage::BlockCache,
-    table::FileObject,
+    table::{FileObject, bloom::Bloom},
 };
 
+use core::hash::Hasher;
+use farmhash;
+use farmhash::FarmHasher;
+use farmhash::fingerprint32;
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
@@ -37,6 +41,7 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    key_hashes: Vec<u32>,
 }
 
 impl SsTableBuilder {
@@ -49,6 +54,7 @@ impl SsTableBuilder {
             data: Vec::with_capacity(block_size),
             meta: Vec::new(),
             block_size,
+            key_hashes: Vec::new(),
         }
     }
 
@@ -60,6 +66,8 @@ impl SsTableBuilder {
         let is_added = self.builder.add(key, value);
 
         if is_added {
+            self.key_hashes.push(fingerprint32(key.into_inner()));
+
             if self.first_key.is_empty() {
                 self.first_key.put_slice(key.into_inner());
             } else {
@@ -72,12 +80,12 @@ impl SsTableBuilder {
             }
         } else {
             // Current block is full, need to finish it and start a new one.
+
+            // a bug fixed after 1 hours:
+            // I forget to set last_key when finishing a block with only one key-value pair
+            // at first I met a problem before is forget to clear first_key after finishing a block,
             if self.last_key.is_empty() {
-                self.last_key.put_slice(key.into_inner());
-                // println!(
-                //     "Updating last_key to solve>>: {:?}",
-                //     String::from_utf8_lossy(&self.last_key)
-                // );
+                self.last_key.put_slice(self.first_key.as_slice());
             }
             let block_meta = BlockMeta {
                 first_key: key::Key::from_bytes(Bytes::copy_from_slice(&self.first_key)),
@@ -97,7 +105,7 @@ impl SsTableBuilder {
                It will always be the first_key and last_key of the previous block.
             */
             self.first_key.clear();
-
+            self.last_key.clear();
             // just recursively call add
             self.add(key, value);
         }
@@ -119,7 +127,7 @@ impl SsTableBuilder {
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
         let block = self.builder.build();
-        // 先设置offset 再写入data
+
         if self.last_key.is_empty() {
             self.last_key.put_slice(&self.first_key);
             // println!(
@@ -137,23 +145,36 @@ impl SsTableBuilder {
 
         let meta_offset = self.data.len();
 
+        // encode block meta
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
+        /*
+        -----------------------------------------------------------------------------------------------------
+        |         Block Section         |                            Meta Section                           |
+        -----------------------------------------------------------------------------------------------------
+        | data block | ... | data block | metadata | meta block offset | bloom filter | bloom filter offset |
+        |                               |  varlen  |         u32       |    varlen    |        u32          |
+        -----------------------------------------------------------------------------------------------------
+        */
 
+        // meta block offset(u32)
         self.data
             .extend_from_slice(&(meta_offset as u32).to_le_bytes());
+
+        // calculate bits per key based on length and false positive
+        let bits_per_key = Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01);
+        let bloom_filter = Bloom::build_from_key_hashes(&self.key_hashes, bits_per_key);
+        let bloom_filter_offset = self.data.len();
+        // put bloom filter after the meta offset
+        bloom_filter.encode(&mut self.data);
+
+        // bloom filter offset(u32)
+        self.data
+            .put_slice(&(bloom_filter_offset as u32).to_le_bytes());
 
         let file = FileObject::create(path.as_ref(), self.data)?;
 
         let first_key = self.meta.first().unwrap().first_key.clone();
         let last_key = self.meta.last().unwrap().last_key.clone();
-
-        // println!("Build a SST id: {},", id);
-        // println!("  first_key: {:?}", String::from_utf8_lossy(&first_key.raw_ref()));
-        // println!("  last_key: {:?}", String::from_utf8_lossy(&last_key.raw_ref()));
-        if id == 1 {
-            println!("last key = {:?}", last_key);
-            println!("self.meta = {:?}", self.meta);
-        }
 
         Ok(SsTable {
             id,
@@ -163,7 +184,7 @@ impl SsTableBuilder {
             block_meta: self.meta,
             block_meta_offset: meta_offset,
             block_cache,
-            bloom: None,
+            bloom: Some(bloom_filter),
             max_ts: 0,
         })
     }

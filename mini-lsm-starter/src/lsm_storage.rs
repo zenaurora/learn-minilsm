@@ -337,16 +337,23 @@ impl LsmStorageInner {
 
         let mut sstable_iters = Vec::new();
 
+        let key_hash = farmhash::fingerprint32(key);
+
         // L0 SSTs（从新到旧）
         for &sst_id in &state.l0_sstables {
             let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
-            println!("I want to find key:{:?}", std::str::from_utf8(key).unwrap());
-            println!(
-                "Checking SSTable-l0 id: {}, first_key: {:?}, last_key: {:?}",
-                sst_id,
-                std::str::from_utf8(sstable.first_key().raw_ref()).unwrap(),
-                std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
-            );
+            if let Some(bloom) = &sstable.bloom {
+                if !bloom.may_contain(key_hash) {
+                    continue;
+                }
+            }
+            // println!("I want to find key:{:?}", std::str::from_utf8(key).unwrap());
+            // println!(
+            //     "Checking SSTable-l0 id: {}, first_key: {:?}, last_key: {:?}",
+            //     sst_id,
+            //     std::str::from_utf8(sstable.first_key().raw_ref()).unwrap(),
+            //     std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
+            // );
             if !Self::key_within(
                 key,
                 sstable.first_key().raw_ref(),
@@ -375,6 +382,13 @@ impl LsmStorageInner {
                 //     std::str::from_utf8(sstable.first_key().raw_ref()).unwrap(),
                 //     std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
                 // );
+
+                if let Some(bloom) = &sstable.bloom {
+                    if !bloom.may_contain(key_hash) {
+                        continue;
+                    }
+                }
+
                 if !Self::key_within(
                     key,
                     sstable.first_key().raw_ref(),

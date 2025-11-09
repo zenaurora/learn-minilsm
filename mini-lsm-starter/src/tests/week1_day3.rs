@@ -136,6 +136,7 @@ fn test_block_seek_key() {
     let mut iter = BlockIterator::create_and_seek_to_key(block, key_of(0).as_key_slice());
     for offset in 1..=5 {
         for i in 0..num_of_keys() {
+            // println!("i is {i}");
             let key = iter.key();
             let value = iter.value();
             assert_eq!(
@@ -144,6 +145,10 @@ fn test_block_seek_key() {
                 "expected key: {:?}, actual key: {:?}",
                 as_bytes(key_of(i).for_testing_key_ref()),
                 as_bytes(key.for_testing_key_ref())
+            );
+            println!(
+                "value of i {:?}",
+                String::from_utf8_lossy(value_of(i).as_ref())
             );
             assert_eq!(
                 value,

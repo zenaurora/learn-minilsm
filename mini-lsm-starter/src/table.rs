@@ -156,17 +156,26 @@ impl SsTable {
         // open SSTable 需要读取meta信息
         // fileObject 包括 File 和 size
         let file_size = file.size();
-        println!("file_size is {file_size}");
+        // println!("file_size is {file_size}");
         let buf = file.read(0, file_size)?;
+
+        let bloom_offset_bytes = &buf[(file_size - 4) as usize..];
+        let bloom_offset = (&bloom_offset_bytes[..4]).get_u32_le() as usize;
+        let bloom_filter = if bloom_offset != 0 {
+            let bloom_data = &buf[bloom_offset..(file_size - 4) as usize];
+            Some(Bloom::decode(bloom_data)?)
+        } else {
+            None
+        };
+
         // 读取meta_offset
         let meta_offset = {
-            let extra_offset = file_size - 4;
-            let meta_sec_offset = &buf[extra_offset as usize..];
+            let meta_sec_offset = &buf[bloom_offset - 4..bloom_offset];
             (&meta_sec_offset[..4]).get_u32_le() as usize
         };
 
         // get and decode block_meta.vec
-        let meta_data = &buf[meta_offset..(file_size - 4) as usize];
+        let meta_data = &buf[meta_offset..(bloom_offset - 4) as usize];
         let block_meta = BlockMeta::decode_block_meta(&mut &meta_data[..]);
 
         let first_key = block_meta
@@ -189,7 +198,7 @@ impl SsTable {
             block_cache,
             first_key,
             last_key,
-            bloom: None,
+            bloom: bloom_filter,
             max_ts: 0,
         })
     }
