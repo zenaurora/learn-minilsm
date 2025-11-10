@@ -190,7 +190,6 @@ impl BlockIterator {
     }
 
     fn get_value_at_index(&self, index: usize) -> &[u8] {
-
         let data = &self.block.data;
         let data_pos = self.block.offsets[index] as usize;
 

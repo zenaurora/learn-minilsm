@@ -275,16 +275,7 @@ impl SsTable {
                 right = mid;
             }
         }
-        let idx = if left == 0 { 0 } else { left - 1 };
-        // 找到第一个 first_key > key 的位置
-
-        idx
-        // let idx = self
-        //     .block_meta
-        //     .partition_point(|meta| meta.first_key.as_key_slice() <= key);
-
-        // // 返回前一个 block（如果 idx > 0）
-        // if idx == 0 { 0 } else { idx - 1 }
+        if left == 0 { 0 } else { left - 1 }
     }
 
     /// Get number of data blocks.

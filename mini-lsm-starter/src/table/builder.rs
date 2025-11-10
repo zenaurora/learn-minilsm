@@ -66,7 +66,7 @@ impl SsTableBuilder {
         let is_added = self.builder.add(key, value);
 
         if is_added {
-            self.key_hashes.push(fingerprint32(key.into_inner()));
+            self.key_hashes.push(fingerprint32(key.raw_ref()));
 
             if self.first_key.is_empty() {
                 self.first_key.put_slice(key.into_inner());
