@@ -45,6 +45,7 @@ fn test_task1_full_compaction() {
     storage.delete(b"2").unwrap();
     sync(&storage);
     assert_eq!(storage.state.read().l0_sstables.len(), 3);
+    println!("1");
     let mut iter = construct_merge_iterator_over_storage(&storage.state.read());
     if TS_ENABLED {
         check_iter_result_by_key(
@@ -70,8 +71,8 @@ fn test_task1_full_compaction() {
     }
     storage.force_full_compaction().unwrap();
     assert!(storage.state.read().l0_sstables.is_empty());
+    println!("2");
     let mut iter = construct_merge_iterator_over_storage(&storage.state.read());
-
     if TS_ENABLED {
         check_iter_result_by_key(
             &mut iter,
@@ -95,6 +96,7 @@ fn test_task1_full_compaction() {
     sync(&storage);
     storage.delete(b"1").unwrap();
     sync(&storage);
+    println!("3");
     let mut iter = construct_merge_iterator_over_storage(&storage.state.read());
     if TS_ENABLED {
         check_iter_result_by_key(
@@ -121,9 +123,14 @@ fn test_task1_full_compaction() {
             ],
         );
     }
+    println!("3 end ==");
+    println!("Forcing full compaction...");
     storage.force_full_compaction().unwrap();
     assert!(storage.state.read().l0_sstables.is_empty());
+    println!("4");
+
     let mut iter = construct_merge_iterator_over_storage(&storage.state.read());
+    println!("{:?}", String::from_utf8_lossy(&iter.key().raw_ref()));
     if TS_ENABLED {
         check_iter_result_by_key(
             &mut iter,
@@ -148,6 +155,7 @@ fn test_task1_full_compaction() {
             ],
         );
     }
+    print!("Finished test_task1_full_compaction\n");
 }
 
 fn generate_concat_sst(

@@ -55,6 +55,10 @@ impl<
             if equal {
                 self.use_a = true;
                 self.b.next()?;
+            } else if self.a.key() <= self.b.key() {
+                self.use_a = true;
+            } else {
+                self.use_a = false;
             }
         } else if !self.a.is_valid() && self.b.is_valid() {
             self.use_a = false;
@@ -63,6 +67,17 @@ impl<
         }
 
         Ok(())
+    }
+
+    fn choose_a(&self) -> bool {
+        if !self.a.is_valid() {
+            return false;
+        }
+        if !self.b.is_valid() {
+            return true;
+        }
+        // If keys are equal, `a` is preferred.
+        self.a.key() <= self.b.key()
     }
 }
 
@@ -102,6 +117,19 @@ impl<
         }
         self.update_flag()?;
         Ok(())
+
+        // // Advance the iterator that was just consumed.
+        // if self.choose_a() {
+        //     self.a.next()?;
+        // } else {
+        //     self.b.next()?;
+        // }
+        // // After advancing, if keys become equal, advance `b` again to maintain the invariant
+        // // that we always prefer `a` and `b` never points to the same key as `a`.
+        // if self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key() {
+        //     self.b.next()?;
+        // }
+        // Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {

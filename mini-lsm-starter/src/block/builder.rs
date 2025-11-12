@@ -77,10 +77,10 @@ impl BlockBuilder {
 
         if self.first_key.is_empty() {
             self.first_key = key.to_key_vec();
-            println!(
-                "save first_key: {:?}",
-                String::from_utf8_lossy(self.first_key.raw_ref())
-            );
+            // println!(
+            //     "save first_key: {:?}",
+            //     String::from_utf8_lossy(self.first_key.raw_ref())
+            // );
         }
         true
     }

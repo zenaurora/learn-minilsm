@@ -33,7 +33,9 @@ pub use simple_leveled::{
 pub use tiered::{TieredCompactionController, TieredCompactionOptions, TieredCompactionTask};
 
 use crate::iterators::StorageIterator;
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
@@ -148,37 +150,44 @@ impl LsmStorageInner {
                 // 获取l0和l1的所有sstbale,然后使用合并迭代器合并
                 // 然后重新生成一个新的sstbale，返回给force_full_compaction调用处
 
-                // println!(
-                //     "Starting full compaction for L0 SSTables: {:?} and L1 SSTables: {:?}",
-                //     l0_sstables, l1_sstables
-                // );
+                // FIX: l1 should use ConcatIterator
 
-                let sstables = {
+                let (l0ssts, l1_ssts) = {
                     let state = self.state.read();
-                    let mut ssts = Vec::new();
-                    for sst_id in l0_sstables.iter().chain(l1_sstables.iter()) {
-                        if let Some(sst) = state.sstables.get(sst_id) {
-                            ssts.push(sst.clone());
-                        }
-                    }
-                    ssts.clone()
+                    let l0_ssts = l0_sstables
+                        .iter()
+                        .filter_map(|id| state.sstables.get(id))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let mut l1_ssts = l1_sstables
+                        .iter()
+                        .filter_map(|id| state.sstables.get(id))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    l1_ssts.sort_by(|a, b| a.first_key().cmp(b.first_key()));
+                    (l0_ssts, l1_ssts)
                 };
 
-                // println!("Compacting {} SSTables (L0 + L1)", sstables.len());
-
-                if sstables.is_empty() {
+                if l0ssts.is_empty() && l1_ssts.is_empty() {
                     return Ok(Vec::new());
                 }
 
-                let iters = sstables
+                println!(
+                    "Compaction merging {} L0 sstables and {} L1 sstables",
+                    l0ssts.len(),
+                    l1_ssts.len()
+                );
+
+                let l0_iters = l0ssts
                     .into_iter()
                     .map(|sst| Box::new(SsTableIterator::create_and_seek_to_first(sst).unwrap()))
                     .collect::<Vec<_>>();
+                let l0_merged_iter = MergeIterator::create(l0_iters);
+
+                let l1_concat_iter = SstConcatIterator::create_and_seek_to_first(l1_ssts)?;
 
                 // println!("=====Created {} iterators for merging", iters.len());
-                let mut merged_iter = MergeIterator::create(iters);
-                // println!("merged_iter valid: {}", merged_iter.is_valid());
-                // println!("=====Created MergeIterator for compaction\n");
+                let mut merged_iter = TwoMergeIterator::create(l0_merged_iter, l1_concat_iter)?;
                 let mut builder = SsTableBuilder::new(self.options.block_size);
 
                 let mut new_sstables: Vec<Arc<SsTable>> = Vec::new();
@@ -187,12 +196,19 @@ impl LsmStorageInner {
                     let key = merged_iter.key();
                     let value = merged_iter.value();
 
-                    if task.compact_to_bottom_level() && value.is_empty() {
+                    if value.is_empty() {
                         // this is deleted
+                        // println!(
+                        //     "Compaction skipping deleted key: {:?}",
+                        //     String::from_utf8_lossy(&key.raw_ref())
+                        // );
                         merged_iter.next()?;
                         continue;
                     }
-                    println!("Compaction adding key: {:?}", key);
+                    println!(
+                        "Compaction adding key: {:?}",
+                        String::from_utf8_lossy(&key.raw_ref())
+                    );
                     builder.add(key, value);
                     if builder.estimated_size() > self.options.target_sst_size {
                         let sstable = builder.build(
@@ -200,11 +216,6 @@ impl LsmStorageInner {
                             Some(self.block_cache.clone()),
                             self.path_of_sst(id),
                         )?;
-                        println!(
-                            "Compaction created new SSTable id={}, size={}",
-                            id,
-                            sstable.table_size()
-                        );
                         new_sstables.push(Arc::new(sstable));
 
                         id = self.next_sst_id();
@@ -224,6 +235,15 @@ impl LsmStorageInner {
                     self.path_of_sst(id),
                 )?));
 
+                let a = new_sstables.first().unwrap();
+
+                let aa = a.clone();
+
+                println!(
+                    "Compaction first key: {:?}, last key: {:?}",
+                    String::from_utf8_lossy(&aa.first_key().raw_ref()),
+                    String::from_utf8_lossy(&aa.last_key().raw_ref()),
+                );
                 Ok(new_sstables)
             }
         }
