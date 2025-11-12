@@ -78,8 +78,11 @@ impl<I: StorageIterator> MergeIterator<I> {
         while let Some(candidate) = heap.pop() {
             // 如果还有效,就作为 current
             if candidate.1.is_valid() {
+                // println!("cur is valid , value={:?}", candidate.1.value());
                 current = Some(candidate);
                 break;
+            } else {
+                // println!("cur is invalid , value={:?}", candidate.1.value());
             }
             // 否则继续尝试下一个
         }
@@ -105,10 +108,15 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     }
 
     fn is_valid(&self) -> bool {
-        self.current
-            .as_ref()
-            .map(|x| x.1.is_valid())
-            .unwrap_or(false)
+        // self.current
+        //     .as_ref()
+        //     .map(|x| x.1.is_valid())
+        //     .unwrap_or(false)
+        if let Some(ref cur) = self.current {
+            cur.1.is_valid()
+        } else {
+            false
+        }
         // unimplemented!()
     }
 

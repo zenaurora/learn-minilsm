@@ -127,6 +127,6 @@ impl StorageIterator for SstConcatIterator {
     }
 
     fn num_active_iterators(&self) -> usize {
-        1
+        self.current.as_ref().map_or(0, |_| 1)
     }
 }

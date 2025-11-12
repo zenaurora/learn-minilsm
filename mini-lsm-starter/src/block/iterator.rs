@@ -57,10 +57,10 @@ impl BlockIterator {
                 as usize;
         assert_eq!(overlap_len, 0, "first key overlap_len should be 0");
         let rest_key = &iter.block.data[data_pos + 4..data_pos + 4 + rest_len];
-        println!(
-            "Initializing first_key {}",
-            String::from_utf8_lossy(rest_key)
-        );
+        // println!(
+        //     "Initializing first_key {}",
+        //     String::from_utf8_lossy(rest_key)
+        // );
         iter.first_key = KeyVec::from_vec(rest_key.to_vec());
 
         iter.seek_to_first();
