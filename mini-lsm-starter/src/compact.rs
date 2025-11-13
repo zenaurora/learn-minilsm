@@ -265,8 +265,6 @@ impl LsmStorageInner {
             let lock = self.state_lock.lock();
             let mut new_state = self.state.read().as_ref().clone();
             new_state.l0_sstables.clear();
-            // refer to the answer, when del should use HashSet to avoid duplicates
-
             let new_l1_ids: Vec<usize> =
                 compacted_sstables.iter().map(|sst| sst.sst_id()).collect();
 
