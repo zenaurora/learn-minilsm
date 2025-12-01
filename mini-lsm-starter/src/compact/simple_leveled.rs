@@ -12,14 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::lsm_storage::LsmStorageState;
 
 #[derive(Debug, Clone)]
 pub struct SimpleLeveledCompactionOptions {
+    // lower level number of files / upper level number of files.
+    // if the ratio is too low, trigger a compaction.
     pub size_ratio_percent: usize,
+    // if l0 sstables number >=this ,trigger a compaction of l0 and l1.
     pub level0_file_num_compaction_trigger: usize,
+    // the number of levels (excluding L0) in the LSM tree.
     pub max_levels: usize,
 }
 
@@ -47,9 +53,49 @@ impl SimpleLeveledCompactionController {
     /// Returns `None` if no compaction needs to be scheduled. The order of SSTs in the compaction task id vector matters.
     pub fn generate_compaction_task(
         &self,
-        _snapshot: &LsmStorageState,
+        snapshot: &LsmStorageState,
     ) -> Option<SimpleLeveledCompactionTask> {
-        unimplemented!()
+        if self.options.max_levels == 0 {
+            return None;
+        }
+
+        let mut level_sizes = vec![0; self.options.max_levels + 1];
+        level_sizes[0] = snapshot.l0_sstables.len();
+        // 把每个层级的sst数量先保存一下，后面用来计算size ratio。
+        for (level_id, level_sst_ids) in &snapshot.levels {
+            // level_id is 0-indexed, so we need to add 1 to get the correct index.
+            level_sizes[level_id + 1] = level_sst_ids.len();
+        }
+
+        // check level0_file_num_compaction_trigger for compaction of L0 to L1
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            return Some(SimpleLeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: snapshot.l0_sstables.clone(),
+                lower_level: 1,
+                lower_level_sst_ids: snapshot.levels[0].1.clone(),
+                is_lower_level_bottom_level: false,
+            });
+        }
+
+        // check size_ratio_percent for compaction of other levels (>= L1)
+        for i in 1..self.options.max_levels {
+            if level_sizes[i] == 0 {
+                // if upper_level == 0, continue
+                continue;
+            }
+            let size_ratio = level_sizes[i + 1] as f64 / level_sizes[i] as f64;
+            if size_ratio < self.options.size_ratio_percent as f64 / 100.0 {
+                return Some(SimpleLeveledCompactionTask {
+                    upper_level: Some(i),
+                    upper_level_sst_ids: snapshot.levels[i - 1].1.clone(),
+                    lower_level: i + 1,
+                    lower_level_sst_ids: snapshot.levels[i].1.clone(),
+                    is_lower_level_bottom_level: i + 1 == self.options.max_levels,
+                });
+            }
+        }
+        None
     }
 
     /// Apply the compaction result.
@@ -61,10 +107,52 @@ impl SimpleLeveledCompactionController {
     /// in your implementation.
     pub fn apply_compaction_result(
         &self,
-        _snapshot: &LsmStorageState,
-        _task: &SimpleLeveledCompactionTask,
-        _output: &[usize],
+        snapshot: &LsmStorageState,
+        task: &SimpleLeveledCompactionTask,
+        output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        let mut new_state = snapshot.clone();
+
+        let upper_ids_set = task
+            .upper_level_sst_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        if let Some(upper_level) = task.upper_level {
+            // if not L0 compaction
+            // Vec::retain is used to remove elements that are not in the upper_ids_set.
+            // this function is very useful and reduce superfulous code.
+            new_state.levels[upper_level - 1]
+                .1
+                .retain(|x| !upper_ids_set.contains(x));
+        } else {
+            // if L0 compaction, because upper_level is None,
+            // we need to remove the sstables from l0 and add them to l1.
+
+            new_state.l0_sstables.retain(|x| !upper_ids_set.contains(x));
+        }
+
+        // remove the sstables from the lower level that are not in the lower_level_sst_ids.
+        let lower_ids_set = task
+            .lower_level_sst_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        new_state.levels[task.lower_level - 1]
+            .1
+            .retain(|x| !lower_ids_set.contains(x));
+
+        // add the new sstables to the lower level.
+        new_state.levels[task.lower_level - 1]
+            .1
+            .extend_from_slice(output);
+
+        let obsolete_ssts = upper_ids_set
+            .clone()
+            .into_iter()
+            .chain(lower_ids_set.clone().into_iter())
+            .collect::<Vec<_>>();
+        // return the new state and the obsolete sstables.
+        (new_state, obsolete_ssts)
     }
 }
