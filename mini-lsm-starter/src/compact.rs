@@ -18,9 +18,6 @@
 mod leveled;
 mod simple_leveled;
 mod tiered;
-
-use std::os::linux::raw::stat;
-use std::os::unix::raw::pid_t;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -181,9 +178,53 @@ impl LsmStorageInner {
                 // TODO(you): implement leveled compaction
                 unimplemented!()
             }
-            CompactionTask::Simple(_simple_task) => {
+            CompactionTask::Simple(simple_task) => {
                 // TODO(you): implement simple leveled compaction
-                unimplemented!()
+                /*
+                    pub upper_level: Option<usize>,
+                    pub upper_level_sst_ids: Vec<usize>,
+                    pub lower_level: usize,
+                    pub lower_level_sst_ids: Vec<usize>,
+                    pub is_lower_level_bottom_level: bool,
+                */
+                let state = {
+                    let state = self.state.read();
+                    state.clone()
+                };
+
+                if simple_task.upper_level_sst_ids.is_empty()
+                    && simple_task.lower_level_sst_ids.is_empty()
+                {
+                    return Ok(Vec::new());
+                }
+
+                let upper_ssts = simple_task
+                    .upper_level_sst_ids
+                    .iter()
+                    .filter_map(|id| state.sstables.get(id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let lower_ssts = simple_task
+                    .lower_level_sst_ids
+                    .iter()
+                    .filter_map(|id| state.sstables.get(id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                let upper_iter = MergeIterator::create(
+                    upper_ssts
+                        .into_iter()
+                        .map(|sst| SsTableIterator::create_and_seek_to_first(sst).map(Box::new))
+                        .collect::<Result<Vec<_>>>()?,
+                );
+                let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
+
+                let merged_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
+
+                self.generate_new_sst_from_iter(
+                    merged_iter,
+                    simple_task.is_lower_level_bottom_level,
+                )
             }
             CompactionTask::Tiered(_tiered_task) => {
                 // TODO(you): implement tiered compaction
@@ -236,6 +277,7 @@ impl LsmStorageInner {
                 let merged_iter = TwoMergeIterator::create(l0_merged_iter, l1_concat_iter)?;
 
                 // self.generate_new_sst_from_iter(merged_iter, task.compact_to_bottom_level())
+                // 返回的是新的sstables
                 self.generate_new_sst_from_iter(merged_iter, task.compact_to_bottom_level())
             }
         }
@@ -293,7 +335,67 @@ impl LsmStorageInner {
     }
 
     fn trigger_compaction(&self) -> Result<()> {
-        unimplemented!()
+        // 触发compaction任务时候不包括force_full_compaction任务
+        // 只有Leveled、Simple、Tiered三种compaction任务会触发compaction
+        let snapshot = {
+            let state = self.state.read();
+            state.clone()
+        };
+
+        let task = self
+            .compaction_controller
+            .generate_compaction_task(&snapshot);
+
+        if let Some(task) = task {
+            // 获取新的sstables
+            let compacted_sstables = self.compact(&task)?;
+
+            // 获取新的sstables的id
+            let output = compacted_sstables
+                .iter()
+                .map(|sst| sst.sst_id())
+                .collect::<Vec<_>>();
+
+            // 应用compaction结果（基于snapshot计算应该如何修改）
+            let (new_state_from_snapshot, obsolete_ssts) = self
+                .compaction_controller
+                .apply_compaction_result(&snapshot, &task, &output, false);
+
+            // update lsm state
+            {
+                let _lock = self.state_lock.lock();
+                // 读取当前最新状态，避免丢掉并发 flush 的 L0
+                let mut new_state = self.state.read().as_ref().clone();
+
+                // 保留当前状态中的 L0（去掉本次 compaction 废弃的文件）
+                new_state
+                    .l0_sstables
+                    .retain(|id| !obsolete_ssts.contains(id));
+
+                // 覆盖 levels（只 compaction 会改 levels，flush 不会）
+                new_state.levels = new_state_from_snapshot.levels;
+                // 因为可能l0有新flush下来的，所以不能应用snapshot里面的值，只需要保留就行
+                // new_state.l0_sstables = new_state_from_snapshot.l0_sstables; -- WRONG
+                // 添加新生成的 SST
+                for sst in compacted_sstables {
+                    new_state.sstables.insert(sst.sst_id(), sst);
+                }
+
+                // 移除废弃的 SST
+                for id in &obsolete_ssts {
+                    new_state.sstables.remove(id);
+                }
+
+                *self.state.write() = Arc::new(new_state);
+                self.sync_dir()?;
+            }
+            // remove obsolete sstables for OS
+            for id in obsolete_ssts {
+                std::fs::remove_file(self.path_of_sst(id))?;
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn spawn_compaction_thread(

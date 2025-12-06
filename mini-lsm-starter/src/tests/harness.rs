@@ -444,14 +444,7 @@ pub fn construct_merge_iterator_over_storage(
     state: &LsmStorageState,
 ) -> MergeIterator<SsTableIterator> {
     let mut iters = Vec::new();
-    println!(
-        "l0 len={},l1 len={}",
-        state.l0_sstables.len(),
-        state.levels.first().unwrap().1.len()
-    );
     for t in &state.l0_sstables {
-        // let a = state.sstables.get(t).cloned().unwrap();
-        // let i = SsTableIterator::create_and_seek_to_first(a.clone()).unwrap();
         iters.push(Box::new(
             SsTableIterator::create_and_seek_to_first(state.sstables.get(t).cloned().unwrap())
                 .unwrap(),
@@ -465,6 +458,5 @@ pub fn construct_merge_iterator_over_storage(
             ));
         }
     }
-
     MergeIterator::create(iters)
 }

@@ -64,7 +64,7 @@ impl SimpleLeveledCompactionController {
         // 把每个层级的sst数量先保存一下，后面用来计算size ratio。
         for (level_id, level_sst_ids) in &snapshot.levels {
             // level_id is 0-indexed, so we need to add 1 to get the correct index.
-            level_sizes[level_id + 1] = level_sst_ids.len();
+            level_sizes[*level_id] = level_sst_ids.len();
         }
 
         // check level0_file_num_compaction_trigger for compaction of L0 to L1
