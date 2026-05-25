@@ -54,10 +54,15 @@ impl BlockBuilder {
         let new_offsets_size = (self.offsets.len() + 1) * 2; // 新增一个 offset
         // let total_size = new_data_size + new_offsets_size + 2; // +2 for num_of_elements
 
-        let estimated_size = std::mem::size_of::<u16>() * 3 + new_offsets_size + 2 + value.len();
+        let estimated_size = self.data.len()
+            + key.len()
+            + std::mem::size_of::<u16>() * 3
+            + new_offsets_size
+            + 2
+            + value.len();
 
         // 如果不是第一个 entry,且总大小会超过 block_size,返回 false
-        if !self.is_empty() && estimated_size + self.data.len() > self.block_size {
+        if !self.is_empty() && estimated_size> self.block_size {
             return false;
         }
 

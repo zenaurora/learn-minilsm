@@ -684,64 +684,6 @@ impl LsmStorageInner {
             }
         }
 
-        // let l1 = snapshot.levels.first().unwrap();
-        // let l1_sst_ids = &l1.1;
-
-        // let mut tables = Vec::new();
-
-        // for &sst_id in l1_sst_ids {
-        //     let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
-
-        //     let first_key = sstable.first_key();
-        //     let last_key = sstable.last_key();
-
-        //     match upper {
-        //         Bound::Included(upper_key) => {
-        //             if first_key.raw_ref() > upper_key {
-        //                 continue;
-        //             }
-        //         }
-        //         Bound::Excluded(upper_key) => {
-        //             if first_key.raw_ref() >= upper_key {
-        //                 continue;
-        //             }
-        //         }
-        //         Bound::Unbounded => {}
-        //     }
-
-        //     match lower {
-        //         Bound::Included(lower_key) => {
-        //             if last_key.raw_ref() < lower_key {
-        //                 continue;
-        //             }
-        //         }
-        //         Bound::Excluded(lower_key) => {
-        //             if last_key.raw_ref() <= lower_key {
-        //                 continue;
-        //             }
-        //         }
-        //         Bound::Unbounded => {}
-        //     }
-
-        //     tables.push(sstable.clone());
-        // }
-
-        // let sst_iters_l1 = match lower {
-        //     Bound::Included(lower_key) => {
-        //         SstConcatIterator::create_and_seek_to_key(tables, KeySlice::from_slice(lower_key))?
-        //     }
-        //     Bound::Excluded(lower_key) => {
-        //         let mut iter = SstConcatIterator::create_and_seek_to_key(
-        //             tables,
-        //             KeySlice::from_slice(lower_key),
-        //         )?;
-        //         if iter.is_valid() && iter.key().raw_ref() == lower_key {
-        //             iter.next()?;
-        //         }
-        //         iter
-        //     }
-        //     Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(tables)?,
-        // };
         let mut all_concat_iters = Vec::new();
         for (level, sst_ids) in &snapshot.levels {
             let mut tables = Vec::new();
@@ -802,70 +744,6 @@ impl LsmStorageInner {
             all_concat_iters.push(Box::new(concat_iter));
         }
 
-        // for (_level, sst_ids) in &snapshot.levels {
-        //     for &sst_id in sst_ids {
-        //         let sstable: &Arc<SsTable> = snapshot.sstables.get(&sst_id).unwrap();
-
-        //         let first_key = sstable.first_key();
-        //         let last_key = sstable.last_key();
-
-        //         match upper {
-        //             Bound::Included(upper_key) => {
-        //                 if first_key.raw_ref() > upper_key {
-        //                     continue;
-        //                 }
-        //             }
-        //             Bound::Excluded(upper_key) => {
-        //                 if first_key.raw_ref() >= upper_key {
-        //                     continue;
-        //                 }
-        //             }
-        //             Bound::Unbounded => {}SstConcatIterator
-        //                 let iter = SsTableIterator::create_and_seek_to_key(
-        //                     sstable.clone(),
-        //                     KeySlice::from_slice(lower_key),
-        //                 )?;
-
-        //                 if iter.is_valid() && iter.key().raw_ref() == lower_key {
-        //                 } else {
-        //                     continue;
-        //                 }
-        //                 // sst_iters.push(Box::new(iter));
-        //                 sst_iters_l1.push(Box::new(iter));
-        //             }
-        //             Bound::Excluded(lower_key) => {
-        //                 if last_key.raw_ref() <= lower_key {
-        //                     continue;
-        //                 }
-
-        //                 let mut iter = SstConcatIterator::create_and_seek_to_key(
-        //                     // sstable.clone(),
-        //                     snapshot.sstables,
-        //                     KeySlice::from_slice(lower_key),
-        //                 )?;
-
-        //                 iter.next()?;
-
-        //                 if iter.is_valid() && iter.key().raw_ref() > lower_key {
-        //                 } else {
-        //                     continue;
-        //                 }
-        //                 // sst_iters.push(Box::new(iter));
-        //                 sst_iters_l1.push(Box::new(iter));
-        //             }
-        //             Bound::Unbounded => {
-        //                 let iter = SstConcatIterator::create_and_seek_to_first(sstable.clone())?;
-        //                 // let iter = SsTableIterator::create_and_seek_to_first(sstable.clone())?;
-        //                 if !iter.is_valid() {
-        //                     continue;
-        //                 }
-        //                 // sst_iters.push(Box::new(iter));
-        //                 sst_iters_l1.push(Box::new(iter));
-        //             }
-        //         }
-        //     }
-        // }
-
         // 创建 merge iterator
         let merge_memtable_iter = MergeIterator::create(mem_iters);
         // let merge_sstable_iter = MergeIterator::create(sst_iters);
@@ -897,8 +775,7 @@ impl LsmStorageInner {
 
         // 创建end_bound 字段
         let end_bound = match upper {
-            Bound::Included(u) => Bound::Included(Bytes::from(u.to_vec())),
-            Bound::Excluded(u) => Bound::Excluded(Bytes::from(u.to_vec())),
+            Bound::Included(u) | Bound::Excluded(u) => Bound::Included(Bytes::copy_from_slice(u)),
             Bound::Unbounded => Bound::Unbounded,
         };
         // println!("MergeIterator created.");
@@ -906,7 +783,7 @@ impl LsmStorageInner {
         let mut lsm_iter = LsmIterator::new(new_iter, end_bound)?;
         // println!("LsmIterator created.");
 
-        // 判断一个key是否被删除，需要跳过这些
+        // 跳过已经被删除的key，即 value为empty
         // 教训：注意要把跳过删除的key的逻辑放在这里，
         // 而非其他的底层结构：MergerIter，MemTableIter...
         while lsm_iter.is_valid() && lsm_iter.value().is_empty() {
