@@ -128,7 +128,6 @@ impl SimpleLeveledCompactionController {
         } else {
             // if L0 compaction, because upper_level is None,
             // we need to remove the sstables from l0 and add them to l1.
-
             new_state.l0_sstables.retain(|x| !upper_ids_set.contains(x));
         }
 
