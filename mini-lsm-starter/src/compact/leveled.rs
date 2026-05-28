@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
+use parking_lot::OnceState::New;
 use serde::{Deserialize, Serialize};
 
-use crate::lsm_storage::LsmStorageState;
+use crate::{lsm_storage::LsmStorageState, table::SsTable};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LeveledCompactionTask {
@@ -45,11 +48,35 @@ impl LeveledCompactionController {
 
     fn find_overlapping_ssts(
         &self,
-        _snapshot: &LsmStorageState,
-        _sst_ids: &[usize],
-        _in_level: usize,
+        snapshot: &LsmStorageState,
+        sst_ids: &[usize], // older
+        in_level: usize,
     ) -> Vec<usize> {
-        unimplemented!()
+        if sst_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let upper_ssts = sst_ids
+            .iter()
+            .map(|id| snapshot.sstables.get(id).unwrap())
+            .cloned()
+            .collect::<Vec<Arc<SsTable>>>();
+
+        if upper_ssts.is_empty() {
+            return Vec::new();
+        }
+
+        let upper_first = upper_ssts.iter().map(|s| s.first_key()).min().unwrap();
+        let upper_last = upper_ssts.iter().map(|s| s.last_key()).max().unwrap();
+        snapshot.levels[in_level]
+            .1
+            .iter()
+            .filter(|&id| {
+                let sst = snapshot.sstables.get(id).unwrap();
+                sst.last_key() >= upper_first && sst.first_key() <= upper_last
+            })
+            .copied()
+            .collect()
     }
 
     fn target_sizes_vec(&self, bottom_level_size_mb: usize) -> Vec<usize> {
@@ -79,8 +106,27 @@ impl LeveledCompactionController {
         let bottom_level_size_mb = snapshot.levels.last().unwrap().1.len();
         let target_sizes = self.target_sizes_vec(bottom_level_size_mb);
 
-        // snapshot.levels in 1-based 
-         let priority_level = snapshot
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            // NOTE: target index is from zero to len()
+            // l1's index in target_sizes is 0
+            let first_level_not_zero: usize = target_sizes
+                .iter()
+                .position(|&x| x > 0)
+                .unwrap_or(target_sizes.len() - 1);
+
+            // let lowe_level_sst_ids = snapshot.levels[first_level_not_zero].1
+
+            return Some(LeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: snapshot.l0_sstables.clone(),
+                lower_level: first_level_not_zero + 1,
+                lower_level_sst_ids: snapshot.levels[first_level_not_zero].1.clone(),
+                is_lower_level_bottom_level: first_level_not_zero + 1 == self.options.max_levels,
+            });
+        }
+
+        // snapshot.levels in 1-based
+        let priority_level = snapshot
             .levels
             .iter()
             .enumerate()
@@ -94,23 +140,6 @@ impl LeveledCompactionController {
                 ratio1.partial_cmp(&ratio2).unwrap()
             })
             .map(|(i, _)| i); // i is 0-based array index
-
-        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
-            // NOTE: target index is from zero to len()
-            // l1's index in target_sizes is 0
-            let first_level_not_zero: usize = target_sizes
-                .iter()
-                .position(|&x| x > 0)
-                .unwrap_or(target_sizes.len() - 1);
-
-            return Some(LeveledCompactionTask {
-                upper_level: None,
-                upper_level_sst_ids: snapshot.l0_sstables.clone(),
-                lower_level: first_level_not_zero + 1,
-                lower_level_sst_ids: snapshot.levels[first_level_not_zero].1.clone(),
-                is_lower_level_bottom_level: first_level_not_zero + 1 == self.options.max_levels,
-            });
-        }
 
         if let Some(level_index) = priority_level {
             let upper_level_num = level_index + 1;
@@ -144,28 +173,24 @@ impl LeveledCompactionController {
             new_state.levels[upper_level - 1]
                 .1
                 .retain(|x| !task.upper_level_sst_ids.contains(x));
-
-            new_state.levels[task.lower_level - 1]
-                .1
-                .retain(|x| !task.upper_level_sst_ids.contains(x));
         } else {
             new_state
                 .l0_sstables
-                .retain(|x| !task.lower_level_sst_ids.contains(x));
+                .retain(|x| !task.upper_level_sst_ids.contains(x));
         }
 
         let sst_ids_to_remove: Vec<usize> = task
             .upper_level_sst_ids
             .iter()
             .copied()
-            .chain(task.lower_level_sst_ids.iter().copied()) 
+            .chain(task.lower_level_sst_ids.iter().copied())
             .collect();
 
         new_state.levels[task.lower_level - 1]
             .1
             .extend_from_slice(output);
 
-        (new_state,sst_ids_to_remove)
+        (new_state, sst_ids_to_remove)
         // unimplemented!()
     }
 }
