@@ -215,7 +215,7 @@ impl LsmStorageInner {
                             task.compact_to_bottom_level(),
                         )
                     }
-                    // L0, need to use MergeIterator in upper iter 
+                    // L0, need to use MergeIterator in upper iter
                     None => {
                         // let mut upper_iters = Vec::with_capacity(upper_level_sst_ids.len()) ;
                         let upper_iters = upper_level_sst_ids
@@ -243,10 +243,25 @@ impl LsmStorageInner {
                     }
                 }
             }
-            CompactionTask::Tiered(_tiered_task) => {
-                
-                // TODO(you): implement tiered compaction
-                unimplemented!()
+            CompactionTask::Tiered(TieredCompactionTask {
+                tiers,
+                bottom_tier_included,
+            }) => {
+                let sst_iters = tiers
+                    .iter()
+                    .map(|(_, ssts)| {
+                        ssts.iter().map(|id| {
+                            SsTableIterator::create_and_seek_to_first(
+                                snapshot.sstables.get(id).unwrap().clone(),
+                            )
+                            .map(Box::new)
+                        })
+                        // .flatten()
+                    })
+                    .flatten()
+                    .collect::<Result<Vec<_>>>()?;
+                let merged_iter = MergeIterator::create(sst_iters);
+                self.generate_new_sst_from_iter(merged_iter, task.compact_to_bottom_level())
             }
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
@@ -276,12 +291,6 @@ impl LsmStorageInner {
                 if l0ssts.is_empty() && l1_ssts.is_empty() {
                     return Ok(Vec::new());
                 }
-
-                // println!(
-                //     "Compaction merging {} L0 sstables and {} L1 sstables",
-                //     l0ssts.len(),
-                //     l1_ssts.len()
-                // );
 
                 let l0_iters = l0ssts
                     .into_iter()

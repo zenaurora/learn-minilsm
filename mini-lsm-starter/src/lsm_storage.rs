@@ -550,28 +550,50 @@ impl LsmStorageInner {
 
         // heavy write operation, use state_lock to synchronize
         {
-            let _state_lcok = self.state_lock.lock();
+            let _state_lock = self.state_lock.lock();
 
             let mut state = self.state.write();
             let cur_state = state.as_ref();
 
             let mut new_imm_tables = cur_state.imm_memtables.clone();
             new_imm_tables.pop();
-            let mut new_l0_sstables = cur_state.l0_sstables.clone();
-            new_l0_sstables.insert(0, memtable_to_flush.id());
+            // let mut new_l0_sstables = cur_state.l0_sstables.clone();
+            // new_l0_sstables.insert(0, memtable_to_flush.id());
+            let mut new_sstables = cur_state.sstables.clone();
+            new_sstables.insert(memtable_to_flush.id(), Arc::new(sstable));
 
-            let new_state = Arc::new(LsmStorageState {
-                memtable: cur_state.memtable.clone(),
-                imm_memtables: new_imm_tables,
-                l0_sstables: new_l0_sstables,
-                levels: cur_state.levels.clone(),
-                sstables: {
-                    let mut new_sstables = cur_state.sstables.clone();
-                    new_sstables.insert(memtable_to_flush.id(), Arc::new(sstable));
-                    new_sstables
-                },
-            });
-
+            let new_state = if self.compaction_controller.flush_to_l0() {
+                // let mut new_imm_tables = cur_state.imm_memtables.clone();
+                // new_imm_tables.pop();
+                let mut new_l0_sstables = cur_state.l0_sstables.clone();
+                new_l0_sstables.insert(0, memtable_to_flush.id());
+                Arc::new(LsmStorageState {
+                    memtable: cur_state.memtable.clone(),
+                    imm_memtables: new_imm_tables,
+                    l0_sstables: new_l0_sstables,
+                    levels: cur_state.levels.clone(),
+                    sstables: {
+                        // let mut new_sstables = cur_state.sstables.clone();
+                        // new_sstables.insert(memtable_to_flush.id(), Arc::new(sstable));
+                        new_sstables
+                    },
+                })
+            } else {
+                // Tierd compaction:
+                let mut new_levels = cur_state.levels.clone();
+                // memtable_to_flush 的 id 作为新的id
+                let new_id = memtable_to_flush.id();
+                new_levels.insert(0, (new_id, vec![new_id]));
+                
+                Arc::new(LsmStorageState {
+                    memtable: cur_state.memtable.clone(),
+                    imm_memtables: new_imm_tables,
+                    l0_sstables: cur_state.l0_sstables.clone(), // 保持为空
+                    levels: new_levels,
+                    sstables: new_sstables,
+                })
+                // todo!()
+            };
             *state = new_state;
         }
 

@@ -45,6 +45,7 @@ impl TieredCompactionController {
         &self,
         snapshot: &LsmStorageState,
     ) -> Option<TieredCompactionTask> {
+        // 只有超过num_tiers 时候才触发压缩任务
         if snapshot.levels.len() < self.options.num_tiers {
             return None;
         }
@@ -100,7 +101,7 @@ impl TieredCompactionController {
             tiers: snapshot
                 .levels
                 .iter()
-                .take(self.options.num_tiers)
+                .take(take_count)
                 .cloned()
                 .collect::<Vec<_>>(),
             bottom_tier_included: take_count >= level_len,
