@@ -41,6 +41,8 @@ pub struct LeveledCompactionController {
     options: LeveledCompactionOptions,
 }
 
+const MB: usize = 1024 * 1024;
+
 impl LeveledCompactionController {
     pub fn new(options: LeveledCompactionOptions) -> Self {
         Self { options }
@@ -68,7 +70,7 @@ impl LeveledCompactionController {
 
         let upper_first = upper_ssts.iter().map(|s| s.first_key()).min().unwrap();
         let upper_last = upper_ssts.iter().map(|s| s.last_key()).max().unwrap();
-        snapshot.levels[in_level]
+        snapshot.levels[in_level - 1]
             .1
             .iter()
             .filter(|&id| {
@@ -103,53 +105,92 @@ impl LeveledCompactionController {
         &self,
         snapshot: &LsmStorageState,
     ) -> Option<LeveledCompactionTask> {
-        let bottom_level_size_mb = snapshot.levels.last().unwrap().1.len();
-        let target_sizes = self.target_sizes_vec(bottom_level_size_mb);
+        let level_sizes: Vec<usize> = snapshot
+            .levels
+            .iter()
+            .map(|(_level_id, sst_ids)| {
+                sst_ids
+                    .iter()
+                    .map(|id| snapshot.sstables.get(id).unwrap().table_size() as usize)
+                    .sum()
+            })
+            .collect();
+
+        let bottom_level_size_mb = level_sizes.last().unwrap() / MB;
+        let target_sizes_mb = self.target_sizes_vec(bottom_level_size_mb);
 
         if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
             // NOTE: target index is from zero to len()
             // l1's index in target_sizes is 0
-            let first_level_not_zero: usize = target_sizes
+            let first_level_not_zero: usize = target_sizes_mb
                 .iter()
                 .position(|&x| x > 0)
-                .unwrap_or(target_sizes.len() - 1);
+                .unwrap_or(target_sizes_mb.len() - 1);
 
-            // let lowe_level_sst_ids = snapshot.levels[first_level_not_zero].1
+            let lower_level_sst_ids = self.find_overlapping_ssts(
+                snapshot,
+                &snapshot.l0_sstables,
+                first_level_not_zero + 1,
+            );
 
             return Some(LeveledCompactionTask {
                 upper_level: None,
                 upper_level_sst_ids: snapshot.l0_sstables.clone(),
                 lower_level: first_level_not_zero + 1,
-                lower_level_sst_ids: snapshot.levels[first_level_not_zero].1.clone(),
+                lower_level_sst_ids,
                 is_lower_level_bottom_level: first_level_not_zero + 1 == self.options.max_levels,
             });
         }
 
-        // snapshot.levels in 1-based
-        let priority_level = snapshot
-            .levels
+        // snapshot.levels in 1-based\
+        let priority_level = level_sizes
             .iter()
+            .copied()
             .enumerate()
-            .filter(|(i, level)| {
-                let target = target_sizes[*i];
-                target > 0 && level.1.len() > target
-            })
-            .max_by(|(i1, l1), (i2, l2)| {
-                let ratio1 = l1.1.len() as f64 / target_sizes[*i1] as f64;
-                let ratio2 = l2.1.len() as f64 / target_sizes[*i2] as f64;
+            .filter(
+                // l1 -> i = 0
+                |(i, size)| {
+                    let target_mb = target_sizes_mb[*i];
+                    target_mb > 0 && *size > target_mb * MB
+                },
+            )
+            .max_by(|(i1, s1), (i2, s2)| {
+                let ratio1 = *s1 as f64 / (target_sizes_mb[*i1] * MB) as f64;
+                let ratio2 = *s2 as f64 / (target_sizes_mb[*i2] * MB) as f64;
                 ratio1.partial_cmp(&ratio2).unwrap()
             })
-            .map(|(i, _)| i); // i is 0-based array index
+            .map(|(i, _size)| i);
+        // let priority_level = snapshot
+        //     .levels
+        //     .iter()
+        //     .enumerate()
+        //     .filter(|(i, level)| {
+        //         let target = target_sizes[*i];
+        //         target > 0 && level.1.len() > target
+        //     })
+        //     .max_by(|(i1, l1), (i2, l2)| {
+        //         let ratio1 = l1.1.len() as f64 / target_sizes[*i1] as f64;
+        //         let ratio2 = l2.1.len() as f64 / target_sizes[*i2] as f64;
+        //         ratio1.partial_cmp(&ratio2).unwrap()
+        //     })
+        //     .map(|(i, _)| i); // i is 0-based array index
 
         if let Some(level_index) = priority_level {
             let upper_level_num = level_index + 1;
             let lower_level_num = upper_level_num + 1;
+
+            let upper_oldest_sst_id = snapshot.levels[level_index].1.iter().min().unwrap().clone();
+            let lower_level_sst_ids =
+                self.find_overlapping_ssts(snapshot, &[upper_oldest_sst_id], lower_level_num);
+
             if lower_level_num <= self.options.max_levels {
                 return Some(LeveledCompactionTask {
                     upper_level: Some(upper_level_num),
-                    upper_level_sst_ids: snapshot.levels[level_index].1.clone(),
+                    // upper_level_sst_ids: snapshot.levels[level_index].1.clone(),
+                    upper_level_sst_ids: vec![upper_oldest_sst_id],
                     lower_level: lower_level_num,
-                    lower_level_sst_ids: snapshot.levels[level_index + 1].1.clone(),
+                    // lower_level_sst_ids: snapshot.levels[level_index + 1].1.clone(),
+                    lower_level_sst_ids,
                     is_lower_level_bottom_level: lower_level_num == self.options.max_levels,
                 });
             }
@@ -179,6 +220,10 @@ impl LeveledCompactionController {
                 .retain(|x| !task.upper_level_sst_ids.contains(x));
         }
 
+        new_state.levels[task.lower_level - 1]
+            .1
+            .retain(|x| !task.lower_level_sst_ids.contains(x));
+
         let sst_ids_to_remove: Vec<usize> = task
             .upper_level_sst_ids
             .iter()
@@ -189,6 +234,18 @@ impl LeveledCompactionController {
         new_state.levels[task.lower_level - 1]
             .1
             .extend_from_slice(output);
+
+        // in recovery 意思是是否是恢复模式，恢复模式不需要排序，因为可能没有firstkey信息
+        if !in_recovery {
+            new_state.levels[task.lower_level - 1].1.sort_by(|a, b| {
+                snapshot
+                    .sstables
+                    .get(a)
+                    .unwrap()
+                    .first_key()
+                    .cmp(snapshot.sstables.get(b).unwrap().first_key())
+            });
+        }
 
         (new_state, sst_ids_to_remove)
         // unimplemented!()
