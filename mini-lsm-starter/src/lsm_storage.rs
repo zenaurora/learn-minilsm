@@ -348,13 +348,6 @@ impl LsmStorageInner {
                     continue;
                 }
             }
-            // println!("I want to find key:{:?}", std::str::from_utf8(key).unwrap());
-            // println!(
-            //     "Checking SSTable-l0 id: {}, first_key: {:?}, last_key: {:?}",
-            //     sst_id,
-            //     std::str::from_utf8(sstable.first_key().raw_ref()).unwrap(),
-            //     std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
-            // );
             if !Self::key_within(
                 key,
                 sstable.first_key().raw_ref(),
@@ -371,7 +364,6 @@ impl LsmStorageInner {
             // if iter.is_valid() && iter.key().raw_ref() == key {
             // sstable_iters.push(Box::new(iter));
             l0_sstable_iters.push(Box::new(iter));
-            // }
         }
 
         let l0_merged_iter = MergeIterator::create(l0_sstable_iters);
@@ -422,19 +414,10 @@ impl LsmStorageInner {
                 each_level_merged_iters.push(Box::new(sstconcat_level_iter));
             }
         }
-        // let sstconcat_level_iter =
-        //     SstConcatIterator::create_and_seek_to_key(level_tables, KeySlice::from_slice(key))?;
         let level_merged_iter = MergeIterator::create(each_level_merged_iters);
         let mut merged_iter = TwoMergeIterator::create(l0_merged_iter, level_merged_iter)?;
 
-        // let mut sstable_merged_iter = SstConcatIterator::create_and_seek_to_first(level_sstable_iters);
         while merged_iter.is_valid() {
-            // println!(
-            //     "Checking SSTable key: {:?},value:{:?}",
-            //     std::str::from_utf8(sstable_merged_iter.key().raw_ref()).unwrap(),
-            //     std::str::from_utf8(sstable_merged_iter.value()).unwrap()
-            // );
-
             if merged_iter.key().raw_ref() == key {
                 let value = merged_iter.value();
                 if value.is_empty() {
