@@ -178,11 +178,25 @@ impl LsmStorageInner {
             state.clone()
         };
         match task {
-            CompactionTask::Leveled(_leveled_task) => {
-                // TODO(you): implement leveled compaction
-                unimplemented!()
-            }
+            // CompactionTask::Leveled(LeveledCompactionTask{
+            //     is_lower_level_bottom_level,
+            //     lower_level,
+            //     lower_level_sst_ids,
+            //     upper_level,
+            //     upper_level_sst_ids,
+            // }) => {
+            //     // TODO(you): implement leveled compaction
+
+            //     unimplemented!()
+            // }
             CompactionTask::Simple(SimpleLeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
+            })
+            | CompactionTask::Leveled(LeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
                 lower_level,

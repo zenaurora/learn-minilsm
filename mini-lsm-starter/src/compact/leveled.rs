@@ -83,7 +83,9 @@ impl LeveledCompactionController {
 
     fn target_sizes_vec(&self, bottom_level_size_mb: usize) -> Vec<usize> {
         let mut target = vec![0_usize; self.options.max_levels];
-        let mut cur = bottom_level_size_mb;
+        // fix: if bottom_level_size too small, the lowest target is always small
+        // the lowest level target is at least base_level_size_mb
+        let mut cur = bottom_level_size_mb.max(self.options.base_level_size_mb);
         let mut below_base_size = false;
         for i in (0..self.options.max_levels).rev() {
             if cur < self.options.base_level_size_mb {

@@ -336,7 +336,7 @@ impl LsmStorageInner {
             }
         }
 
-        let mut sstable_iters = Vec::new();
+        let mut l0_sstable_iters = Vec::new();
 
         let key_hash = farmhash::fingerprint32(key);
 
@@ -369,12 +369,17 @@ impl LsmStorageInner {
             )?;
             // 检查是否找到了精确匹配的 key
             // if iter.is_valid() && iter.key().raw_ref() == key {
-            sstable_iters.push(Box::new(iter));
+            // sstable_iters.push(Box::new(iter));
+            l0_sstable_iters.push(Box::new(iter));
             // }
         }
 
+        let l0_merged_iter = MergeIterator::create(l0_sstable_iters);
+
+        let mut each_level_merged_iters = Vec::with_capacity(state.levels.len());
         // 其他 level 的 SSTs
         for (_level, sst_ids) in &state.levels {
+            let mut level_tables = Vec::new();
             for &sst_id in sst_ids {
                 let sstable = state.sstables.get(&sst_id).unwrap();
                 // println!(
@@ -398,35 +403,47 @@ impl LsmStorageInner {
                     continue;
                 }
 
-                let iter = SsTableIterator::create_and_seek_to_key(
-                    sstable.clone(),
-                    KeySlice::from_slice(key),
-                )?;
+                // let iter = SsTableIterator::create_and_seek_to_key(
+                //     sstable.clone(),
+                //     KeySlice::from_slice(key),
+                // )?;
 
                 // 检查是否找到了精确匹配的 key
                 // if iter.is_valid() && iter.key().raw_ref() == key {
-                sstable_iters.push(Box::new(iter));
+                // level_sstable_iters.push(Box::new(iter));
+                level_tables.push(sstable.clone());
                 // }
             }
+            if !level_tables.is_empty() {
+                let sstconcat_level_iter = SstConcatIterator::create_and_seek_to_key(
+                    level_tables,
+                    KeySlice::from_slice(key),
+                )?;
+                each_level_merged_iters.push(Box::new(sstconcat_level_iter));
+            }
         }
+        // let sstconcat_level_iter =
+        //     SstConcatIterator::create_and_seek_to_key(level_tables, KeySlice::from_slice(key))?;
+        let level_merged_iter = MergeIterator::create(each_level_merged_iters);
+        let mut merged_iter = TwoMergeIterator::create(l0_merged_iter, level_merged_iter)?;
 
-        let mut sstable_merged_iter = MergeIterator::create(sstable_iters);
-        while sstable_merged_iter.is_valid() {
+        // let mut sstable_merged_iter = SstConcatIterator::create_and_seek_to_first(level_sstable_iters);
+        while merged_iter.is_valid() {
             // println!(
             //     "Checking SSTable key: {:?},value:{:?}",
             //     std::str::from_utf8(sstable_merged_iter.key().raw_ref()).unwrap(),
             //     std::str::from_utf8(sstable_merged_iter.value()).unwrap()
             // );
 
-            if sstable_merged_iter.key().raw_ref() == key {
-                let value = sstable_merged_iter.value();
+            if merged_iter.key().raw_ref() == key {
+                let value = merged_iter.value();
                 if value.is_empty() {
                     return Ok(None);
                 } else {
                     return Ok(Some(Bytes::copy_from_slice(value)));
                 }
             } else {
-                sstable_merged_iter.next()?;
+                merged_iter.next()?;
             }
         }
 
@@ -584,7 +601,7 @@ impl LsmStorageInner {
                 // memtable_to_flush 的 id 作为新的id
                 let new_id = memtable_to_flush.id();
                 new_levels.insert(0, (new_id, vec![new_id]));
-                
+
                 Arc::new(LsmStorageState {
                     memtable: cur_state.memtable.clone(),
                     imm_memtables: new_imm_tables,
