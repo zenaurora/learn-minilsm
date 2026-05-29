@@ -60,8 +60,7 @@ impl BlockMeta {
             buf.put_u32_le(meta.offset as u32);
 
             buf.put_u16_le(first_key_len);
-            buf.put_slice(meta.first_key.as_key_slice()
-            .into_inner());
+            buf.put_slice(meta.first_key.as_key_slice().into_inner());
 
             buf.put_u16_le(last_key_len);
             buf.put_slice(meta.last_key.as_key_slice().into_inner());

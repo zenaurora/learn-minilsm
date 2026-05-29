@@ -62,7 +62,7 @@ impl BlockBuilder {
             + value.len();
 
         // 如果不是第一个 entry,且总大小会超过 block_size,返回 false
-        if !self.is_empty() && estimated_size> self.block_size {
+        if !self.is_empty() && estimated_size > self.block_size {
             return false;
         }
 
