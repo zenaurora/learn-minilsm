@@ -378,11 +378,17 @@ impl LsmStorageInner {
     fn trigger_compaction(&self) -> Result<()> {
         // 触发compaction任务时候不包括force_full_compaction任务
         // 只有Leveled、Simple、Tiered三种compaction任务会触发compaction
+
+        /*
+            获取 read lock
+            clone 内部的 Arc<LsmStorageState>
+            立即释放 read lock
+        */
         let snapshot = {
             let state = self.state.read();
             state.clone()
         };
-
+        // let mut snapshot = self.state.read().as_ref().clone();
         let task = self
             .compaction_controller
             .generate_compaction_task(&snapshot);
@@ -390,17 +396,21 @@ impl LsmStorageInner {
         if let Some(task) = task {
             // 获取新的sstables
             let compacted_sstables = self.compact(&task)?;
+            // let mut snapshot = self.state.read().as_ref().clone();
 
-            // 获取新的sstables的id
-            let output = compacted_sstables
-                .iter()
-                .map(|sst| sst.sst_id())
-                .collect::<Vec<_>>();
+            // // 获取新的sstables的id
+            // let output = compacted_sstables
+            //     .iter()
+            //     .map(|sst| {
+            //         snapshot.sstables.insert(sst.sst_id(), sst.clone());
+            //         sst.sst_id()
+            //     })
+            //     .collect::<Vec<_>>();
 
-            // 应用compaction结果（基于snapshot计算应该如何修改）
-            let (new_state_from_snapshot, obsolete_ssts) = self
-                .compaction_controller
-                .apply_compaction_result(&snapshot, &task, &output, false);
+            // // 应用compaction结果（基于snapshot计算应该如何修改）
+            // let (new_state_from_snapshot, obsolete_ssts) = self
+            //     .compaction_controller
+            //     .apply_compaction_result(&snapshot, &task, &output, false);
 
             // update lsm state
             {
@@ -408,19 +418,27 @@ impl LsmStorageInner {
                 // 读取当前最新状态，避免丢掉并发 flush 的 L0
                 let mut new_state = self.state.read().as_ref().clone();
 
-                // 保留当前状态中的 L0（去掉本次 compaction 废弃的文件）
-                new_state
-                    .l0_sstables
-                    .retain(|id| !obsolete_ssts.contains(id));
+                // 获取新的sstables的id
+                let output = compacted_sstables
+                    .iter()
+                    .map(|sst| {
+                        new_state.sstables.insert(sst.sst_id(), sst.clone());
+                        sst.sst_id()
+                    })
+                    .collect::<Vec<_>>();
 
+                // 应用compaction结果（基于snapshot计算应该如何修改）
+                let (new_state_from_snapshot, obsolete_ssts) = self
+                    .compaction_controller
+                    .apply_compaction_result(&new_state, &task, &output, false);
                 // 覆盖 levels（只 compaction 会改 levels，flush 不会）
                 new_state.levels = new_state_from_snapshot.levels;
                 // 因为可能l0有新flush下来的，所以不能应用snapshot里面的值，只需要保留就行
                 // new_state.l0_sstables = new_state_from_snapshot.l0_sstables; -- WRONG
                 // 添加新生成的 SST
-                for sst in compacted_sstables {
-                    new_state.sstables.insert(sst.sst_id(), sst);
-                }
+                // for sst in compacted_sstables {
+                //     new_state.sstables.insert(sst.sst_id(), sst);
+                // }
 
                 // 移除废弃的 SST
                 for id in &obsolete_ssts {
@@ -429,10 +447,11 @@ impl LsmStorageInner {
 
                 *self.state.write() = Arc::new(new_state);
                 self.sync_dir()?;
-            }
-            // remove obsolete sstables for OS
-            for id in obsolete_ssts {
-                std::fs::remove_file(self.path_of_sst(id))?;
+
+                // remove obsolete sstables for OS
+                for id in obsolete_ssts {
+                    std::fs::remove_file(self.path_of_sst(id))?;
+                }
             }
         }
 
