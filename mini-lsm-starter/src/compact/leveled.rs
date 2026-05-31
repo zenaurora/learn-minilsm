@@ -205,7 +205,7 @@ impl LeveledCompactionController {
             // let oldest_sst_last_key = snapshot.sstables[upper_oldest_sst_id].last_key();
 
             let mut upper_sst_ids = vec![*upper_oldest_sst_id];
-            let mut lower_level_sst_ids= Vec::new();
+            let mut lower_level_sst_ids = Vec::new();
             loop {
                 let overlapping_return =
                     self.find_overlapping_ssts(snapshot, &upper_sst_ids, lower_level_num);
@@ -216,7 +216,7 @@ impl LeveledCompactionController {
                     ref last_key,
                 }) = overlapping_return
                 {
-                    let new_upper_ids :Vec<usize> = snapshot.levels[level_index]
+                    let new_upper_ids: Vec<usize> = snapshot.levels[level_index]
                         .1
                         .iter()
                         .filter(|id| {
@@ -226,10 +226,10 @@ impl LeveledCompactionController {
                         })
                         .copied()
                         .collect();
-                    
+
                     lower_level_sst_ids = lower_sst_ids;
-                    if new_upper_ids.len() == upper_sst_ids.len(){
-                        // nothing new 
+                    if new_upper_ids.len() == upper_sst_ids.len() {
+                        // nothing new
                         break;
                     }
                     upper_sst_ids = new_upper_ids

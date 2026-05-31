@@ -512,7 +512,6 @@ impl LsmStorageInner {
             *self.state.write() = new_state;
             self.sync_dir()?;
 
-
             // println!("Memtable frozen.");
             // println!(
             //     "new state immutable memtables: {}",
@@ -596,7 +595,6 @@ impl LsmStorageInner {
                     sstables: new_sstables,
                 })
             };
-
 
             *self.state.write() = new_state;
             self.sync_dir()?;
