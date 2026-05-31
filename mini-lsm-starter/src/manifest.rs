@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::{fs::File, io::Read};
 
 use anyhow::{Context, Result};
-use bytes::Buf;
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
@@ -106,7 +105,6 @@ impl Manifest {
     }
 
     pub fn add_record_when_init(&self, record: ManifestRecord) -> Result<()> {
-
         let mut file = self.file.lock();
         let record_u8 = serde_json::to_vec(&record)?;
 

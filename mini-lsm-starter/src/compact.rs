@@ -21,7 +21,7 @@ mod tiered;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 pub use leveled::{LeveledCompactionController, LeveledCompactionOptions, LeveledCompactionTask};
 use serde::{Deserialize, Serialize};
 pub use simple_leveled::{
@@ -35,6 +35,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -336,40 +337,43 @@ impl LsmStorageInner {
 
         let compacted_sstables = self.compact(&task)?;
 
-        // 获取要删除的old sst id
-        let ids_to_remove = &l0_ids
-            .iter()
-            .chain(l1_ids.iter())
-            .cloned()
-            .collect::<Vec<_>>();
+        let ids_to_remove: Vec<usize> = l0_ids.iter().chain(l1_ids.iter()).copied().collect();
 
-        // update lsm state
         {
             let lock = self.state_lock.lock();
             let mut new_state = self.state.read().as_ref().clone();
-            new_state.l0_sstables.clear();
+
+            // 只移除本次 compaction 处理的 L0 SST，保留并发 flush 的新 SST
+            new_state.l0_sstables.retain(|id| !l0_ids.contains(id));
+
             let new_l1_ids: Vec<usize> =
                 compacted_sstables.iter().map(|sst| sst.sst_id()).collect();
-
             new_state.levels[0].1 = new_l1_ids;
 
-            // remove old sst from state
-            for id in ids_to_remove {
+            for id in &ids_to_remove {
                 new_state.sstables.remove(id);
             }
 
-            for sst in compacted_sstables {
-                new_state.sstables.insert(sst.sst_id(), Arc::clone(&sst));
+            for sst in &compacted_sstables {
+                new_state.sstables.insert(sst.sst_id(), Arc::clone(sst));
             }
 
-            // use write lock here, instead of upgrading read lock to write lock
             *self.state.write() = Arc::new(new_state);
             self.sync_dir()?;
-        }
 
-        // remove old sst for OS
-        for sst_id in ids_to_remove {
-            std::fs::remove_file(self.path_of_sst(*sst_id))?;
+            if let Some(manifest) = &self.manifest {
+                let record = ManifestRecord::Compaction(
+                    task,
+                    compacted_sstables.iter().map(|s| s.sst_id()).collect(),
+                );
+                manifest
+                    .add_record(&lock, record)
+                    .context("add record failed")?;
+            }
+
+            for id in &ids_to_remove {
+                std::fs::remove_file(self.path_of_sst(*id))?;
+            }
         }
 
         Ok(())
@@ -414,10 +418,9 @@ impl LsmStorageInner {
 
             // update lsm state
             {
-                let _lock = self.state_lock.lock();
+                let lock = self.state_lock.lock();
                 // 读取当前最新状态，避免丢掉并发 flush 的 L0
                 let mut new_state = self.state.read().as_ref().clone();
-
                 // 获取新的sstables的id
                 let output = compacted_sstables
                     .iter()
@@ -447,6 +450,16 @@ impl LsmStorageInner {
 
                 *self.state.write() = Arc::new(new_state);
                 self.sync_dir()?;
+
+                if let Some(manifest) = &self.manifest {
+                    let record = ManifestRecord::Compaction(
+                        task,
+                        compacted_sstables.iter().map(|s| s.sst_id()).collect(),
+                    );
+                    manifest
+                        .add_record(&lock, record)
+                        .context("add record failed")?;
+                }
 
                 // remove obsolete sstables for OS
                 for id in obsolete_ssts {

@@ -286,7 +286,6 @@ impl LsmStorageInner {
             ),
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
-
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -294,7 +293,7 @@ impl LsmStorageInner {
             block_cache: Arc::new(BlockCache::new(1024)),
             next_sst_id: AtomicUsize::new(1),
             compaction_controller,
-            manifest: None,
+            manifest: Some(Manifest::create(format!("{}/MANIFEST", path.display()))?),
             options: options.into(),
             mvcc: None,
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
@@ -494,8 +493,8 @@ impl LsmStorageInner {
             MemTable::create(self.next_sst_id())
         };
         {
-            let mut state = self.state.write();
-            let cur_state = state.as_ref();
+            let cur_state = self.state.read().as_ref().clone();
+            // let cur_state = state.as_ref();
 
             let mut new_imm_table = cur_state.imm_memtables.clone();
             new_imm_table.insert(0, cur_state.memtable.clone());
@@ -510,7 +509,10 @@ impl LsmStorageInner {
                 sstables: cur_state.sstables.clone(),
             });
 
-            *state = new_state;
+            *self.state.write() = new_state;
+            self.sync_dir()?;
+
+
             // println!("Memtable frozen.");
             // println!(
             //     "new state immutable memtables: {}",
@@ -552,8 +554,9 @@ impl LsmStorageInner {
         {
             let _state_lock = self.state_lock.lock();
 
-            let mut state = self.state.write();
-            let cur_state = state.as_ref();
+            // let mut state = self.state.write();
+            // let cur_state = state.as_ref();
+            let cur_state = self.state.read().as_ref().clone();
 
             let mut new_imm_tables = cur_state.imm_memtables.clone();
             new_imm_tables.pop();
@@ -592,9 +595,17 @@ impl LsmStorageInner {
                     levels: new_levels,
                     sstables: new_sstables,
                 })
-                // todo!()
             };
-            *state = new_state;
+
+
+            *self.state.write() = new_state;
+            self.sync_dir()?;
+
+            if let Some(manifest) = &self.manifest {
+                let record = crate::manifest::ManifestRecord::Flush(memtable_to_flush.id());
+                manifest.add_record(&_state_lock, record)?;
+            }
+            // *state = new_state;
         }
 
         Ok(())
