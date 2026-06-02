@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, create_dir};
-use std::ops::Bound;
+use std::ops::{Add, Bound};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -26,6 +26,7 @@ use std::{mem, option};
 use anyhow::{Ok, Result};
 use bytes::Bytes;
 use crossbeam_channel::Iter;
+use crossbeam_skiplist::SkipMap;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -42,7 +43,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
+use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -177,6 +178,10 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
+        if self.inner.options.enable_wal == true {
+            // flush all memtables to disk before close
+            self.force_full_compaction()?;
+        }
         self.flush_notifier.send(())?;
         self.compaction_notifier.send(())?;
         self.flush_thread.lock().take().map(|handle| handle.join());
@@ -286,18 +291,96 @@ impl LsmStorageInner {
             ),
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
-        let storage = Self {
+
+        let mut storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
             path: path.to_path_buf(),
             block_cache: Arc::new(BlockCache::new(1024)),
             next_sst_id: AtomicUsize::new(1),
             compaction_controller,
-            manifest: Some(Manifest::create(format!("{}/MANIFEST", path.display()))?),
+            manifest: None,
             options: options.into(),
             mvcc: None,
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
+        if !path.exists() {
+            std::fs::create_dir_all(path)?;
+        }
+
+        let manifest_path = path.join("MANIFEST");
+        if !manifest_path.exists() {
+            storage.manifest = Some(Manifest::create(&manifest_path)?);
+        } else {
+            // 已经存在了manifest 需要读取数据而非创建新的
+            let (manifest, records) = Manifest::recover(path.join("MANIFEST"))?;
+            let mut guard = storage.state.write();
+            let mut snapshot: LsmStorageState = guard.as_ref().clone();
+            storage.manifest = Some(manifest);
+            let mut max_id = 0_usize;
+            for record in records {
+                match record {
+                    crate::manifest::ManifestRecord::Compaction(task, output) => {
+                        // output is new_id need to add
+                        let (new_state, obsolete_ssts) = storage
+                            .compaction_controller
+                            .apply_compaction_result(&snapshot, &task, &output, true);
+
+                        snapshot = new_state;
+                        for id in obsolete_ssts {
+                            snapshot.sstables.remove(&id);
+                        }
+                        max_id = max_id.max(output.iter().max().copied().unwrap_or_default());
+                    }
+                    crate::manifest::ManifestRecord::Flush(sst_id) => {
+                        max_id = max_id.max(sst_id);
+                        if storage.compaction_controller.flush_to_l0() {
+                            snapshot.l0_sstables.insert(0, sst_id);
+                        } else {
+                            snapshot.levels.insert(0, (sst_id, vec![sst_id]));
+                        }
+                        // unimplemented!()
+                    }
+                    crate::manifest::ManifestRecord::NewMemtable(id) => {
+                        unimplemented!()
+                    }
+                }
+            }
+
+            for id in snapshot.l0_sstables.iter().chain(
+                snapshot
+                    .levels
+                    .iter()
+                    .flat_map(|(_level_id, sst_ids)| sst_ids),
+            ) {
+                let sst = SsTable::open(
+                    *id,
+                    Some(storage.block_cache.clone()),
+                    FileObject::open(&Self::path_of_sst_static(path, *id))?,
+                )?;
+                snapshot.sstables.insert(*id, Arc::new(sst));
+            }
+
+            // 如果是level compaction 就重新进行排序
+            if let CompactionController::Leveled(_) = storage.compaction_controller {
+                snapshot.levels.iter_mut().for_each(|(_id, ssts)| {
+                    ssts.sort_by(|a, b| {
+                        snapshot
+                            .sstables
+                            .get(a)
+                            .unwrap()
+                            .first_key()
+                            .cmp(snapshot.sstables.get(b).unwrap().first_key())
+                    })
+                });
+            }
+            // create new memtable
+            snapshot.memtable = Arc::new(MemTable::create(max_id + 1));
+            storage
+                .next_sst_id
+                .store(max_id + 2, std::sync::atomic::Ordering::SeqCst);
+            *guard = Arc::new(snapshot);
+        }
 
         Ok(storage)
     }

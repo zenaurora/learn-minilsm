@@ -54,8 +54,20 @@ impl BlockBuilder {
         let new_offsets_size = (self.offsets.len() + 1) * 2; // 新增一个 offset
         // let total_size = new_data_size + new_offsets_size + 2; // +2 for num_of_elements
 
+        let overlap_len = if self.first_key.is_empty() {
+            0
+        } else {
+            self.first_key
+                .raw_ref()
+                .iter()
+                .zip(key.into_inner().iter())
+                .take_while(|&(a, b)| *a == *b)
+                .count()
+        };
+        let rest_len = key.len() - overlap_len;
+
         let estimated_size = self.data.len()
-            + key.len()
+            + rest_len
             + std::mem::size_of::<u16>() * 3
             + new_offsets_size
             + 2

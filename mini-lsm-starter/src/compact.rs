@@ -83,6 +83,7 @@ impl CompactionController {
         }
     }
 
+    // 返回新的状态和需要删掉的sst_id
     pub fn apply_compaction_result(
         &self,
         snapshot: &LsmStorageState,
@@ -398,30 +399,16 @@ impl LsmStorageInner {
             .generate_compaction_task(&snapshot);
 
         if let Some(task) = task {
-            // 获取新的sstables
+            // 获取新生成的sstables，基于需要进行压缩的那些ssts
             let compacted_sstables = self.compact(&task)?;
             // let mut snapshot = self.state.read().as_ref().clone();
-
-            // // 获取新的sstables的id
-            // let output = compacted_sstables
-            //     .iter()
-            //     .map(|sst| {
-            //         snapshot.sstables.insert(sst.sst_id(), sst.clone());
-            //         sst.sst_id()
-            //     })
-            //     .collect::<Vec<_>>();
-
-            // // 应用compaction结果（基于snapshot计算应该如何修改）
-            // let (new_state_from_snapshot, obsolete_ssts) = self
-            //     .compaction_controller
-            //     .apply_compaction_result(&snapshot, &task, &output, false);
 
             // update lsm state
             {
                 let lock = self.state_lock.lock();
                 // 读取当前最新状态，避免丢掉并发 flush 的 L0
                 let mut new_state = self.state.read().as_ref().clone();
-                // 获取新的sstables的id
+                // 获取新生成的sstables对应的id，后续需要将
                 let output = compacted_sstables
                     .iter()
                     .map(|sst| {
@@ -436,6 +423,7 @@ impl LsmStorageInner {
                     .apply_compaction_result(&new_state, &task, &output, false);
                 // 覆盖 levels（只 compaction 会改 levels，flush 不会）
                 new_state.levels = new_state_from_snapshot.levels;
+                new_state.l0_sstables = new_state_from_snapshot.l0_sstables;
                 // 因为可能l0有新flush下来的，所以不能应用snapshot里面的值，只需要保留就行
                 // new_state.l0_sstables = new_state_from_snapshot.l0_sstables; -- WRONG
                 // 添加新生成的 SST

@@ -192,7 +192,7 @@ impl LeveledCompactionController {
             .max_by(|(i1, s1), (i2, s2)| {
                 let ratio1 = *s1 as f64 / (target_sizes_mb[*i1] * MB) as f64;
                 let ratio2 = *s2 as f64 / (target_sizes_mb[*i2] * MB) as f64;
-                ratio1.partial_cmp(&ratio2).unwrap()
+                ratio1.total_cmp(&ratio2)
             })
             .map(|(i, _size)| i);
 
@@ -254,6 +254,7 @@ impl LeveledCompactionController {
         None
     }
 
+    // 返回新的状态和需要删掉的sst_id
     pub fn apply_compaction_result(
         &self,
         snapshot: &LsmStorageState,
