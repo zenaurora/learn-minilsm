@@ -116,7 +116,7 @@ impl TieredCompactionController {
     ) -> (LsmStorageState, Vec<usize>) {
         let mut new_state = snapshot.clone();
 
-        let tiers_and_ssts_map = task
+        let mut tiers_and_ssts_map = task
             .tiers
             .iter()
             .map(|(x, y)| (*x, y))
@@ -126,18 +126,31 @@ impl TieredCompactionController {
 
         // 所有需要删掉的tier
         let levels_compacted = &task.tiers;
-
-        new_state.levels.retain(|(tier_id, sst_ids)| {
-            if tiers_and_ssts_map.contains_key(tier_id) {
-                assert_eq!(&sst_ids, tiers_and_ssts_map.get(tier_id).unwrap());
-                ssts_id_to_remove.extend(sst_ids.iter().copied());
-                false
+        let mut levels = Vec::new();
+        let mut new_tier_added = false;
+        for (tier_id, sst_ids) in &new_state.levels {
+            if let Some(ids) = tiers_and_ssts_map.remove(tier_id) {
+                ssts_id_to_remove.extend(ids.iter().copied());
             } else {
-                true
+                levels.push((*tier_id, sst_ids.clone()));
             }
-        });
+            if tiers_and_ssts_map.is_empty() && !new_tier_added {
+                new_tier_added = true;
+                levels.push((output[0], output.to_vec()));
+            }
+        }
 
-        new_state.levels.insert(0, (output[0], output.to_vec()));
+        // new_state.levels.retain(|(tier_id, sst_ids)| {
+        //     if tiers_and_ssts_map.contains_key(tier_id) {
+        //         assert_eq!(&sst_ids, tiers_and_ssts_map.get(tier_id).unwrap());
+        //         ssts_id_to_remove.extend(sst_ids.iter().copied());
+        //         false
+        //     } else {
+        //         true
+        //     }
+        // });
+        new_state.levels = levels;
+        // new_state.levels.insert(0, (output[0], output.to_vec()));
         println!("apply compaction result successful");
         (new_state, ssts_id_to_remove)
     }
