@@ -108,7 +108,7 @@ impl BlockBuilder {
         // and return the compacted key
         if self.first_key.is_empty() {
             let mut compacted_key = vec![];
-            compacted_key.put_u16_le(0 as u16);
+            compacted_key.put_u16_le(0_u16);
             compacted_key.put_u16_le(key.len() as u16);
             compacted_key.put_slice(key.into_inner());
             return KeyVec::from_vec(compacted_key);

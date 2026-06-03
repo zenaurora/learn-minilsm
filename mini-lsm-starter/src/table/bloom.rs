@@ -79,7 +79,7 @@ impl Bloom {
     /// Get bloom filter bits per key from entries count and FPR
     pub fn bloom_bits_per_key(entries: usize, false_positive_rate: f64) -> usize {
         let size =
-            -1.0 * (entries as f64) * false_positive_rate.ln() / std::f64::consts::LN_2.powi(2);
+            -(entries as f64) * false_positive_rate.ln() / std::f64::consts::LN_2.powi(2);
         let locs = (size / (entries as f64)).ceil();
         locs as usize
     }
@@ -92,7 +92,7 @@ impl Bloom {
         // nbits就是Bloom Filter的位数，至少64位
         let nbits = (keys.len() * bits_per_key).max(64);
         // 计算字节数，并调整nbits为8的倍数
-        let nbytes = (nbits + 7) / 8;
+        let nbytes = nbits.div_ceil(8);
         let nbits = nbytes * 8;
         // 创建一个字节数组存储filter，并初始化为0
         let mut filter = BytesMut::with_capacity(nbytes);
@@ -101,7 +101,7 @@ impl Bloom {
         // TODO: build the bloom filter
         for &key in keys {
             let mut h = key;
-            let delta = (h >> 17) | (h << 15);
+            let delta = h.rotate_left(15);
 
             for _ in 0..k {
                 filter.set_bit(h as usize % nbits, true);

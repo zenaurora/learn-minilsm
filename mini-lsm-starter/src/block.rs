@@ -18,10 +18,9 @@
 mod builder;
 mod iterator;
 
-use std::io::{Cursor, Seek};
 
 pub use builder::BlockBuilder;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes};
 pub use iterator::BlockIterator;
 
 /// A block is the smallest unit of read and caching in LSM tree. It is a collection of sorted key-value pairs.

@@ -149,7 +149,7 @@ impl SimpleLeveledCompactionController {
         let obsolete_ssts = upper_ids_set
             .clone()
             .into_iter()
-            .chain(lower_ids_set.clone().into_iter())
+            .chain(lower_ids_set.clone())
             .collect::<Vec<_>>();
         // return the new state and the obsolete sstables.
         (new_state, obsolete_ssts)

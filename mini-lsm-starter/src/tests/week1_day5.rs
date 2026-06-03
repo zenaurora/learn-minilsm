@@ -21,7 +21,6 @@ use bytes::Bytes;
 use tempfile::tempdir;
 
 use super::*;
-use crate::iterators::StorageIterator;
 use crate::{
     iterators::two_merge_iterator::TwoMergeIterator,
     lsm_storage::{LsmStorageInner, LsmStorageOptions},

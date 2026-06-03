@@ -107,16 +107,7 @@ impl MemTable {
 
     /// Get a value by key.
     pub fn get(&self, key: &[u8]) -> Option<Bytes> {
-        if let Some(entry) = self.map.get(key) {
-            // entry.value() is Bytes
-            // 就算是 [] 也要返回Some([])
-            // 因为这个检测是被delete还是没有这个key是上层决定的。
-            // 上层逻辑是 Some([]) => None
-            // Some(v) => Some(v)
-            Some(entry.value().clone())
-        } else {
-            None
-        }
+        self.map.get(key).map(|entry| entry.value().clone())
     }
 
     /// Put a key-value pair into the mem-table.

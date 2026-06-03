@@ -175,7 +175,7 @@ impl SsTable {
         };
 
         // get and decode block_meta.vec
-        let meta_data = &buf[meta_offset..(bloom_offset - 4) as usize];
+        let meta_data = &buf[meta_offset..(bloom_offset - 4)];
         let block_meta = BlockMeta::decode_block_meta(&mut &meta_data[..]);
 
         let first_key = block_meta

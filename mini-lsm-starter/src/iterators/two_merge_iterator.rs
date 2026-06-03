@@ -55,11 +55,7 @@ impl<
             if equal {
                 self.use_a = true;
                 self.b.next()?;
-            } else if self.a.key() <= self.b.key() {
-                self.use_a = true;
-            } else {
-                self.use_a = false;
-            }
+            } else { self.use_a = self.a.key() <= self.b.key(); }
         } else if !self.a.is_valid() && self.b.is_valid() {
             self.use_a = false;
         } else if self.a.is_valid() && !self.b.is_valid() {

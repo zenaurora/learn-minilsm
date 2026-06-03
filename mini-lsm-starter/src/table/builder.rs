@@ -29,9 +29,7 @@ use crate::{
     table::{FileObject, bloom::Bloom},
 };
 
-use core::hash::Hasher;
 use farmhash;
-use farmhash::FarmHasher;
 use farmhash::fingerprint32;
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {

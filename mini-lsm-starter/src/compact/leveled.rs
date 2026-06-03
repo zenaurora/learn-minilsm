@@ -18,7 +18,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    key::{Key, KeyBytes, KeyVec},
+    key::KeyBytes,
     lsm_storage::LsmStorageState,
     table::SsTable,
 };

@@ -16,17 +16,14 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::collections::HashMap;
-use std::fs::{File, create_dir};
-use std::ops::{Add, Bound};
+use std::fs::File;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use std::{mem, option};
 
 use anyhow::{Ok, Result};
 use bytes::Bytes;
-use crossbeam_channel::Iter;
-use crossbeam_skiplist::SkipMap;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -178,7 +175,7 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        if self.inner.options.enable_wal == true {
+        if self.inner.options.enable_wal {
             // flush all memtables to disk before close
             self.force_full_compaction()?;
         }
@@ -436,11 +433,10 @@ impl LsmStorageInner {
         // L0 SSTs（从新到旧）
         for &sst_id in &state.l0_sstables {
             let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
-            if let Some(bloom) = &sstable.bloom {
-                if !bloom.may_contain(key_hash) {
+            if let Some(bloom) = &sstable.bloom
+                && !bloom.may_contain(key_hash) {
                     continue;
                 }
-            }
             if !Self::key_within(
                 key,
                 sstable.first_key().raw_ref(),
@@ -474,11 +470,10 @@ impl LsmStorageInner {
                 //     std::str::from_utf8(sstable.last_key().raw_ref()).unwrap()
                 // );
 
-                if let Some(bloom) = &sstable.bloom {
-                    if !bloom.may_contain(key_hash) {
+                if let Some(bloom) = &sstable.bloom
+                    && !bloom.may_contain(key_hash) {
                         continue;
                     }
-                }
 
                 if !Self::key_within(
                     key,
@@ -849,6 +844,10 @@ impl LsmStorageInner {
                 tables.push(sstable.clone());
             }
 
+            if tables.is_empty(){
+                continue;
+            }
+
             let concat_iter = match lower {
                 Bound::Included(lower_key) => SstConcatIterator::create_and_seek_to_key(
                     tables,
@@ -887,7 +886,31 @@ impl LsmStorageInner {
         Ok(new_iter)
     }
 
+
+
+
     /// Create an iterator over a range of keys.
+    /*
+                            scan(lower, upper)
+                              │
+                     get_twomerged_iter()
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+   ① Memtable             ② L0 SSTs           ③ L1+ Levels
+   (skipmap)              (SsTableIter)       (SstConcatIter)
+        │                     │                     │
+  MergeIterator          MergeIterator          MergeIterator
+  (多个memtable合并)     (多个L0 SST合并)       (每个level一个)
+        │                     │                     │
+        └──── TwoMerge ───────┘                     │
+                   │                                │
+                   └──────── TwoMerge ──────────────┘
+                                │
+                          LsmIterator (过滤删除的key)
+                                │
+                          FusedIterator (边界保护)
+     */
     pub fn scan(
         &self,
         lower: Bound<&[u8]>,
