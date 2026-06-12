@@ -35,7 +35,13 @@ pub struct Wal {
 impl Wal {
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
-            file: Arc::new(Mutex::new(BufWriter::new(File::create(path)?))),
+            file: Arc::new(Mutex::new(BufWriter::new(
+                OpenOptions::new()
+                    .read(true)
+                    .create_new(true)
+                    .write(true)
+                    .open(path)?
+            ))),
         })
     }
 

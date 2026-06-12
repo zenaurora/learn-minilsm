@@ -133,7 +133,9 @@ impl MemTable {
         // add to wal first
         if let Some(wal) = &self.wal {
             wal.put(&key_bytes, &value_bytes)?;
-            wal.sync()?;
+            // wal.sync()?;
+            // shouldnot sync each time
+            // according to the book: You do not need to fsync every time on writing data
         }
 
         // Calculate size increase
