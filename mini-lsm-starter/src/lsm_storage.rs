@@ -37,7 +37,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
@@ -175,10 +175,10 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        if self.inner.options.enable_wal {
-            // flush all memtables to disk before close
-            self.force_full_compaction()?;
-        }
+        // if self.inner.options.enable_wal {
+        //     // flush all memtables to disk before close
+        //     self.force_full_compaction()?;
+        // }
         self.flush_notifier.send(())?;
         self.compaction_notifier.send(())?;
         self.flush_thread.lock().take().map(|handle| handle.join());
@@ -186,14 +186,16 @@ impl MiniLsm {
             .lock()
             .take()
             .map(|handle| handle.join());
-
-        if !self.inner.state.read().memtable.is_empty() {
-            self.inner
-                .force_freeze_memtable(&self.inner.state_lock.lock())?
-        }
-
-        while !self.inner.state.read().imm_memtables.is_empty() {
-            self.inner.force_flush_next_imm_memtable()?;
+        if !self.inner.options.enable_wal {
+            // if enable wal, there is no need to flush memtables to sst
+            // because wal has provided consistency
+            if !self.inner.state.read().memtable.is_empty() {
+                self.inner
+                    .force_freeze_memtable(&self.inner.state_lock.lock())?
+            }
+            while !self.inner.state.read().imm_memtables.is_empty() {
+                self.inner.force_flush_next_imm_memtable()?;
+            }
         }
 
         self.inner.sync_dir()?;
@@ -262,6 +264,7 @@ impl MiniLsm {
         if !self.inner.state.read().imm_memtables.is_empty() {
             self.inner.force_flush_next_imm_memtable()?;
         }
+        self.sync()?;
         Ok(())
     }
 
@@ -320,11 +323,12 @@ impl LsmStorageInner {
             storage.manifest = Some(Manifest::create(&manifest_path)?);
         } else {
             // 已经存在了manifest 需要读取数据而非创建新的
-            let (manifest, records) = Manifest::recover(path.join("MANIFEST"))?;
+            let (mut manifest, records) = Manifest::recover(path.join("MANIFEST"))?;
             let mut guard = storage.state.write();
             let mut snapshot: LsmStorageState = guard.as_ref().clone();
-            storage.manifest = Some(manifest);
+            // storage.manifest = Some(manifest);
             let mut max_id = 0_usize;
+            let mut memtable_ids = Vec::new();
             for record in records {
                 match record {
                     crate::manifest::ManifestRecord::Compaction(task, output) => {
@@ -349,10 +353,24 @@ impl LsmStorageInner {
                         // unimplemented!()
                     }
                     crate::manifest::ManifestRecord::NewMemtable(id) => {
-                        unimplemented!()
+                        max_id = max_id.max(id);
+                        memtable_ids.push(id);
                     }
                 }
             }
+
+            // create new memtable
+            let  new_id= max_id + 1;
+            if storage.options.enable_wal {
+                snapshot.memtable = Arc::new(MemTable::create_with_wal(
+                    new_id,
+                    Self::path_of_wal_static(path, new_id),
+                )?);
+
+            } else {
+                snapshot.memtable = Arc::new(MemTable::create(new_id))
+            };
+            manifest.add_record_when_init(ManifestRecord::NewMemtable(new_id))?;
 
             // 将l0 和 l1的存储的id对应的sst插入sstables
             for id in snapshot.l0_sstables.iter().chain(
@@ -382,8 +400,8 @@ impl LsmStorageInner {
                     })
                 });
             }
-            // create new memtable
-            snapshot.memtable = Arc::new(MemTable::create(max_id + 1));
+            
+            storage.manifest = Some(manifest);
             storage
                 .next_sst_id
                 .store(max_id + 2, std::sync::atomic::Ordering::SeqCst);
@@ -394,7 +412,7 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        self.state.read().memtable.sync_wal()
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
@@ -434,9 +452,10 @@ impl LsmStorageInner {
         for &sst_id in &state.l0_sstables {
             let sstable: &Arc<SsTable> = state.sstables.get(&sst_id).unwrap();
             if let Some(bloom) = &sstable.bloom
-                && !bloom.may_contain(key_hash) {
-                    continue;
-                }
+                && !bloom.may_contain(key_hash)
+            {
+                continue;
+            }
             if !Self::key_within(
                 key,
                 sstable.first_key().raw_ref(),
@@ -471,9 +490,10 @@ impl LsmStorageInner {
                 // );
 
                 if let Some(bloom) = &sstable.bloom
-                    && !bloom.may_contain(key_hash) {
-                        continue;
-                    }
+                    && !bloom.may_contain(key_hash)
+                {
+                    continue;
+                }
 
                 if !Self::key_within(
                     key,
@@ -574,22 +594,18 @@ impl LsmStorageInner {
     }
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        // println!("Freezing memtable...");
-        // state 包含新的 memtable 和 一个 新的 imm_memtable(clone 之前的然后加入新的)
+        let memtable_id = self.next_sst_id();
         let new_memtable = if self.options.enable_wal {
-            MemTable::create_with_wal(self.next_sst_id(), &self.path)?
+            MemTable::create_with_wal(memtable_id, self.path_of_wal(memtable_id))?
         } else {
-            MemTable::create(self.next_sst_id())
+            MemTable::create(memtable_id)
         };
         {
             let cur_state = self.state.read().as_ref().clone();
-            // let cur_state = state.as_ref();
 
             let mut new_imm_table = cur_state.imm_memtables.clone();
             new_imm_table.insert(0, cur_state.memtable.clone());
 
-            // 将外部创建的 new_memtable 放入新的 state
-            // 以及 新的 imm_memtable
             let new_state = Arc::new(LsmStorageState {
                 memtable: Arc::new(new_memtable),
                 imm_memtables: new_imm_table,
@@ -599,16 +615,16 @@ impl LsmStorageInner {
             });
 
             *self.state.write() = new_state;
-            self.sync_dir()?;
-
-            // println!("Memtable frozen.");
-            // println!(
-            //     "new state immutable memtables: {}",
-            //     state.imm_memtables.len()
-            // );
         }
+
+        if let Some(manifest) = &self.manifest {
+            manifest.add_record(
+                _state_lock_observer,
+                crate::manifest::ManifestRecord::NewMemtable(memtable_id),
+            )?;
+        }
+        self.sync_dir()?;
         Ok(())
-        // unimplemented!()
     }
 
     /// Force flush the earliest-created immutable memtable to disk
@@ -654,20 +670,15 @@ impl LsmStorageInner {
             new_sstables.insert(memtable_to_flush.id(), Arc::new(sstable));
 
             let new_state = if self.compaction_controller.flush_to_l0() {
-                // let mut new_imm_tables = cur_state.imm_memtables.clone();
-                // new_imm_tables.pop();
                 let mut new_l0_sstables = cur_state.l0_sstables.clone();
                 new_l0_sstables.insert(0, memtable_to_flush.id());
+
                 Arc::new(LsmStorageState {
                     memtable: cur_state.memtable.clone(),
                     imm_memtables: new_imm_tables,
                     l0_sstables: new_l0_sstables,
                     levels: cur_state.levels.clone(),
-                    sstables: {
-                        // let mut new_sstables = cur_state.sstables.clone();
-                        // new_sstables.insert(memtable_to_flush.id(), Arc::new(sstable));
-                        new_sstables
-                    },
+                    sstables: new_sstables,
                 })
             } else {
                 // Tierd compaction:
@@ -844,7 +855,7 @@ impl LsmStorageInner {
                 tables.push(sstable.clone());
             }
 
-            if tables.is_empty(){
+            if tables.is_empty() {
                 continue;
             }
 
@@ -886,31 +897,28 @@ impl LsmStorageInner {
         Ok(new_iter)
     }
 
-
-
-
     /// Create an iterator over a range of keys.
     /*
-                            scan(lower, upper)
-                              │
-                     get_twomerged_iter()
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-   ① Memtable             ② L0 SSTs           ③ L1+ Levels
-   (skipmap)              (SsTableIter)       (SstConcatIter)
-        │                     │                     │
-  MergeIterator          MergeIterator          MergeIterator
-  (多个memtable合并)     (多个L0 SST合并)       (每个level一个)
-        │                     │                     │
-        └──── TwoMerge ───────┘                     │
-                   │                                │
-                   └──────── TwoMerge ──────────────┘
+                              scan(lower, upper)
                                 │
-                          LsmIterator (过滤删除的key)
+                       get_twomerged_iter()
                                 │
-                          FusedIterator (边界保护)
-     */
+          ┌─────────────────────┼─────────────────────┐
+          │                     │                     │
+     ① Memtable             ② L0 SSTs           ③ L1+ Levels
+     (skipmap)              (SsTableIter)       (SstConcatIter)
+          │                     │                     │
+    MergeIterator          MergeIterator          MergeIterator
+    (多个memtable合并)     (多个L0 SST合并)       (每个level一个)
+          │                     │                     │
+          └──── TwoMerge ───────┘                     │
+                     │                                │
+                     └──────── TwoMerge ──────────────┘
+                                  │
+                            LsmIterator (过滤删除的key)
+                                  │
+                            FusedIterator (边界保护)
+       */
     pub fn scan(
         &self,
         lower: Bound<&[u8]>,

@@ -82,8 +82,20 @@ impl MemTable {
     }
 
     /// Create a memtable from WAL
-    pub fn recover_from_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn recover_from_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        let skiplist = SkipMap::new();
+        let wal = Wal::recover(path, &skiplist)?;
+        let approximate_size: usize = skiplist
+            .iter()
+            .map(|e| e.key().len() + e.value().len())
+            .sum();
+
+        Ok(MemTable {
+            map: Arc::new(skiplist),
+            approximate_size: Arc::new(AtomicUsize::new(approximate_size)),
+            id,
+            wal: Some(wal),
+        })
     }
 
     pub fn for_testing_put_slice(&self, key: &[u8], value: &[u8]) -> Result<()> {
@@ -118,6 +130,12 @@ impl MemTable {
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let key_bytes = Bytes::copy_from_slice(key);
         let value_bytes = Bytes::copy_from_slice(value);
+
+        // add to wal first
+        if let Some(wal) = &self.wal {
+            wal.put(&key_bytes, &value_bytes)?;
+            wal.sync()?;
+        }
 
         // Calculate size increase
         let size_increase = key_bytes.len() + value_bytes.len();
