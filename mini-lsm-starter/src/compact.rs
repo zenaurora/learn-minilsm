@@ -265,16 +265,14 @@ impl LsmStorageInner {
             }) => {
                 let sst_iters = tiers
                     .iter()
-                    .map(|(_, ssts)| {
+                    .flat_map(|(_, ssts)| {
                         ssts.iter().map(|id| {
                             SsTableIterator::create_and_seek_to_first(
                                 snapshot.sstables.get(id).unwrap().clone(),
                             )
                             .map(Box::new)
                         })
-                        // .flatten()
                     })
-                    .flatten()
                     .collect::<Result<Vec<_>>>()?;
                 let merged_iter = MergeIterator::create(sst_iters);
                 self.generate_new_sst_from_iter(merged_iter, task.compact_to_bottom_level())

@@ -15,8 +15,9 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
+use std::mem;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -320,15 +321,29 @@ impl LsmStorageInner {
 
         let manifest_path = path.join("MANIFEST");
         if !manifest_path.exists() {
-            storage.manifest = Some(Manifest::create(&manifest_path)?);
+            if storage.options.enable_wal {
+                // need to replace the default memtable that not with wal in the second line of this function
+                let id = storage.state.read().memtable.id();
+                let memtable_with_wal =
+                    MemTable::create_with_wal(id, Self::path_of_wal_static(path, id))?;
+
+                let mut guard = storage.state.write();
+                let mut snapshot = guard.as_ref().clone();
+                snapshot.memtable = Arc::new(memtable_with_wal);
+                *guard = Arc::new(snapshot);
+            }
+            let manifest = Manifest::create(&manifest_path)?;
+            let memtable_id = storage.state.read().memtable.id();
+            manifest.add_record_when_init(ManifestRecord::NewMemtable(memtable_id))?;
+            storage.manifest = Some(manifest);
         } else {
             // 已经存在了manifest 需要读取数据而非创建新的
-            let (mut manifest, records) = Manifest::recover(path.join("MANIFEST"))?;
+            let (manifest, records) = Manifest::recover(path.join("MANIFEST"))?;
             let mut guard = storage.state.write();
             let mut snapshot: LsmStorageState = guard.as_ref().clone();
             // storage.manifest = Some(manifest);
             let mut max_id = 0_usize;
-            let mut memtable_ids = Vec::new();
+            let mut memtable_ids = BTreeSet::new();
             for record in records {
                 match record {
                     crate::manifest::ManifestRecord::Compaction(task, output) => {
@@ -350,26 +365,33 @@ impl LsmStorageInner {
                         } else {
                             snapshot.levels.insert(0, (sst_id, vec![sst_id]));
                         }
-                        // unimplemented!()
+                        // if a memtable is flushed, then no need to revocer
+                        memtable_ids.remove(&sst_id);
                     }
                     crate::manifest::ManifestRecord::NewMemtable(id) => {
                         max_id = max_id.max(id);
-                        memtable_ids.push(id);
+                        memtable_ids.insert(id);
                     }
                 }
             }
 
-            // create new memtable
-            let  new_id= max_id + 1;
+            let new_id = max_id + 1;
             if storage.options.enable_wal {
+                for id in memtable_ids {
+                    let memtable =
+                        MemTable::recover_from_wal(id, Self::path_of_wal_static(path, id))?;
+                    if !memtable.is_empty() {
+                        snapshot.imm_memtables.insert(0, Arc::new(memtable));
+                    }
+                }
+                // Create new active memtable with WAL BEFORE writing manifest record
                 snapshot.memtable = Arc::new(MemTable::create_with_wal(
                     new_id,
                     Self::path_of_wal_static(path, new_id),
                 )?);
-
             } else {
-                snapshot.memtable = Arc::new(MemTable::create(new_id))
-            };
+                snapshot.memtable = Arc::new(MemTable::create(new_id));
+            }
             manifest.add_record_when_init(ManifestRecord::NewMemtable(new_id))?;
 
             // 将l0 和 l1的存储的id对应的sst插入sstables
@@ -400,7 +422,6 @@ impl LsmStorageInner {
                     })
                 });
             }
-            
             storage.manifest = Some(manifest);
             storage
                 .next_sst_id

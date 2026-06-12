@@ -18,7 +18,6 @@
 mod builder;
 mod iterator;
 
-
 pub use builder::BlockBuilder;
 use bytes::{BufMut, Bytes};
 pub use iterator::BlockIterator;

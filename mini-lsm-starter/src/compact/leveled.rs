@@ -17,11 +17,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    key::KeyBytes,
-    lsm_storage::LsmStorageState,
-    table::SsTable,
-};
+use crate::{key::KeyBytes, lsm_storage::LsmStorageState, table::SsTable};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LeveledCompactionTask {

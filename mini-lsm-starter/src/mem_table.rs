@@ -78,7 +78,6 @@ impl MemTable {
             id,
             approximate_size: Arc::new(AtomicUsize::new(0)),
         })
-        // unimplemented!()
     }
 
     /// Create a memtable from WAL
