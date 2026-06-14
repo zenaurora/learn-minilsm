@@ -35,7 +35,7 @@ use crate::iterators::StorageIterator;
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::KeySlice;
+use crate::key::{self, KeySlice};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{MemTable, MemTableIterator};
@@ -175,10 +175,6 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        // if self.inner.options.enable_wal {
-        //     // flush all memtables to disk before close
-        //     self.force_full_compaction()?;
-        // }
         self.flush_notifier.send(())?;
         self.compaction_notifier.send(())?;
         self.flush_thread.lock().take().map(|handle| handle.join());
@@ -562,24 +558,28 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        unimplemented!()
-    }
-
-    /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
         let memtable_size = {
             let state = self.state.read();
-            state.memtable.put(key, value)?;
+            for op in batch {
+                match op {
+                    WriteBatchRecord::Del(key) => {
+                        state.memtable.put(key.as_ref(), &[])?;
+                    }
+                    WriteBatchRecord::Put(key, value) => {
+                        state.memtable.put(key.as_ref(), value.as_ref())?;
+                    }
+                }
+            }
             state.memtable.approximate_size()
         }; // Release read lock here
 
         // Check if we need to freeze memtable (double-check pattern)
         if memtable_size >= self.options.target_sst_size {
-            let state_lock = self.state_lock.lock(); // 状态修改需要使用 Mutex 进行同步
-            let state = self.state.read(); // 重新获取读锁
+            let state_lock = self.state_lock.lock(); // 需要lock来实现状态修改
+            let state = self.state.read(); // just need read lock
             if state.memtable.approximate_size() >= self.options.target_sst_size {
-                drop(state); // Release read lock before calling freeze
+                drop(state);
                 self.force_freeze_memtable(&state_lock)?;
             }
         }
@@ -587,9 +587,14 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    /// Put a key-value pair into the storage by writing into the current memtable.
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.write_batch(&[WriteBatchRecord::Put(key, value)])
+    }
+
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
-        self.put(key, &[])
+        self.write_batch(&[WriteBatchRecord::Del(key)])
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
