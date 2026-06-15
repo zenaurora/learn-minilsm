@@ -190,7 +190,8 @@ impl SsTable {
 
         // Verify meta checksum: | no. of blocks (u32) | metadata (varlen) | checksum (u32) |
         let meta_section_with_checksum = &buf[meta_offset..(bloom_offset - 4)];
-        let meta_section: &[u8] = &meta_section_with_checksum[..meta_section_with_checksum.len() - 4];
+        let meta_section: &[u8] =
+            &meta_section_with_checksum[..meta_section_with_checksum.len() - 4];
         let stored_meta_checksum =
             (&meta_section_with_checksum[meta_section_with_checksum.len() - 4..]).get_u32_le();
         let computed_meta_checksum = crc32fast::hash(meta_section);
