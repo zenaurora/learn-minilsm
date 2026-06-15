@@ -40,7 +40,7 @@ impl Wal {
                     .read(true)
                     .create_new(true)
                     .write(true)
-                    .open(path)?
+                    .open(path)?,
             ))),
         })
     }

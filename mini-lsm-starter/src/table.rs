@@ -157,12 +157,26 @@ impl SsTable {
         // fileObject 包括 File 和 size
         let file_size = file.size();
         // println!("file_size is {file_size}");
-        let buf = file.read(0, file_size)?;
+        let buf: Vec<u8> = file.read(0, file_size)?;
 
         let bloom_offset_bytes = &buf[(file_size - 4) as usize..];
         let bloom_offset = (&bloom_offset_bytes[..4]).get_u32_le() as usize;
         let bloom_filter = if bloom_offset != 0 {
-            let bloom_data = &buf[bloom_offset..(file_size - 4) as usize];
+            let bloom_data_with_checksum = &buf[bloom_offset..(file_size - 4) as usize];
+
+            let bloom_data = &bloom_data_with_checksum[..bloom_data_with_checksum.len() - 4];
+            let stored_checksum =
+                (&bloom_data_with_checksum[bloom_data_with_checksum.len() - 4..]).get_u32_le();
+
+            let compute_checksum = crc32fast::hash(bloom_data);
+            if stored_checksum != compute_checksum {
+                return Err(anyhow::anyhow!(
+                    "bloom checksum mismatch: stored={:#x}, computed={:#x}",
+                    stored_checksum,
+                    compute_checksum
+                ));
+            }
+
             Some(Bloom::decode(bloom_data)?)
         } else {
             None
@@ -174,8 +188,22 @@ impl SsTable {
             (&meta_sec_offset[..4]).get_u32_le() as usize
         };
 
-        // get and decode block_meta.vec
-        let meta_data = &buf[meta_offset..(bloom_offset - 4)];
+        // Verify meta checksum: | no. of blocks (u32) | metadata (varlen) | checksum (u32) |
+        let meta_section_with_checksum = &buf[meta_offset..(bloom_offset - 4)];
+        let meta_section: &[u8] = &meta_section_with_checksum[..meta_section_with_checksum.len() - 4];
+        let stored_meta_checksum =
+            (&meta_section_with_checksum[meta_section_with_checksum.len() - 4..]).get_u32_le();
+        let computed_meta_checksum = crc32fast::hash(meta_section);
+        if stored_meta_checksum != computed_meta_checksum {
+            return Err(anyhow::anyhow!(
+                "meta checksum mismatch: stored={:#x}, computed={:#x}",
+                stored_meta_checksum,
+                computed_meta_checksum
+            ));
+        }
+
+        // Skip the first 4 bytes (no. of blocks) and decode block_meta
+        let meta_data = &meta_section[4..];
         let block_meta = BlockMeta::decode_block_meta(&mut &meta_data[..]);
 
         let first_key = block_meta
@@ -225,20 +253,32 @@ impl SsTable {
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        let file = self.file.0.as_ref().unwrap();
+        // let file = self.file.0.as_ref().unwrap();
         let file_obj = &self.file;
 
         let cur_block_meta = &self.block_meta[block_idx];
 
         let cur_meta_offset = cur_block_meta.offset;
-        let len = if block_idx + 1 < self.block_meta.len() {
+        let len_with_checksum: usize = if block_idx + 1 < self.block_meta.len() {
             self.block_meta[block_idx + 1].offset - cur_meta_offset
         } else {
             self.block_meta_offset - cur_meta_offset
         };
-        let block_u8 = file_obj.read(cur_meta_offset as u64, len as u64)?;
+        let block_u8 = file_obj.read(cur_meta_offset as u64, len_with_checksum as u64)?;
 
-        Ok(Arc::new(Block::decode(&block_u8)))
+        let block_data = &block_u8[..block_u8.len() - 4];
+        let stored_checksum = (&block_u8[block_u8.len() - 4..]).get_u32_le();
+
+        let computed_checksum = crc32fast::hash(block_data);
+        if stored_checksum != computed_checksum {
+            return Err(anyhow::anyhow!(
+                "block checksum mismatch: stored={:#x}, computed={:#x}",
+                stored_checksum,
+                computed_checksum
+            ));
+        }
+
+        Ok(Arc::new(Block::decode(block_data)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)

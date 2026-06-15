@@ -97,6 +97,11 @@ impl SsTableBuilder {
                 std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
             let block_data = old_builder.build().encode();
             self.data.extend_from_slice(&block_data);
+
+            // add block_data crc32 checksum
+            let checksum = crc32fast::hash(&block_data);
+            self.data.put_u32_le(checksum);
+
             /* a bug fixed after 1 hours:
                I forget to reset first_key and last_key after finishing a block,
                so the new block will have wrong first_key and last_key.
@@ -124,8 +129,8 @@ impl SsTableBuilder {
         block_cache: Option<Arc<BlockCache>>,
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
-        let block = self.builder.build();
-
+        let block = self.builder.build().encode();
+        let checksum = crc32fast::hash(&block);
         if self.last_key.is_empty() {
             self.last_key.put_slice(&self.first_key);
             // println!(
@@ -139,20 +144,16 @@ impl SsTableBuilder {
             offset: self.data.len(),
         });
 
-        self.data.extend_from_slice(&block.encode());
+        self.data.extend_from_slice(&block);
+        self.data.put_u32_le(checksum);
 
         let meta_offset = self.data.len();
 
-        // encode block meta
+        // encode block meta: | no. of blocks (u32) | metadata (varlen) | checksum (u32) |
+        self.data.put_u32_le(self.meta.len() as u32);
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
-        /*
-        -----------------------------------------------------------------------------------------------------
-        |         Block Section         |                            Meta Section                           |
-        -----------------------------------------------------------------------------------------------------
-        | data block | ... | data block | metadata | meta block offset | bloom filter | bloom filter offset |
-        |                               |  varlen  |         u32       |    varlen    |        u32          |
-        -----------------------------------------------------------------------------------------------------
-        */
+        let meta_checksum = crc32fast::hash(&self.data[meta_offset..]);
+        self.data.put_u32_le(meta_checksum);
 
         // meta block offset(u32)
         self.data
@@ -164,6 +165,8 @@ impl SsTableBuilder {
         let bloom_filter_offset = self.data.len();
         // put bloom filter after the meta offset
         bloom_filter.encode(&mut self.data);
+        let bloom_checksum = crc32fast::hash(&self.data[bloom_filter_offset..]);
+        self.data.put_u32_le(bloom_checksum);
 
         // bloom filter offset(u32)
         self.data
